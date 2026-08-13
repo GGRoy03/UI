@@ -74,26 +74,40 @@ int main()
             // first in any case I guess. This is becoming really complex :/
             //
 
-            ui_node_desc Container =
+            ui_vertical_layout *Container = UIEnterVerticalLayout(0, Window);
+            if(Container)
             {
-                .SizingX = {.Type = UISizing_Fixed, .Fixed = 300.0f},
-                .SizingY = {.Type = UISizing_Fixed, .Fixed = 500.0f},
-                .MinSize = {.X = 300.0f, .Y = 500.0f},
-                .MaxSize = {.X = 300.0f, .Y = 500.0f},
-            };
+                ui_vertical_content *TitleBar = UIPushVerticalContent(Container);
+                if(TitleBar)
+                {
+                    //
+                    // I'd like to make this nicer to write, but the idea seems correct.
+                    //
 
-            ui_node_desc TitleBar =
-            {
-                .SizingX = {.Type = UISizing_Fixed, .Fixed = 310.0f},
-                .SizingY = {.Type = UISizing_Fixed, .Fixed = 500.0f},
-                .MinSize = {.X = 100.0f, .Y = 250.0f},
-                .MaxSize = {.X = 310.0f, .Y = 500.0f},
-            };
+                    TitleBar->SizingX = (ui_sizing){.Type = UISizing_Fixed, .Fixed = 250.0f};
+                    TitleBar->SizingY = (ui_sizing){.Type = UISizing_Fixed, .Fixed = 450.0f};
+                    TitleBar->Min     = (ui_size){.X = 250.0f, .Y = 450.0f};
+                    TitleBar->Max     = (ui_size){.X = 250.0f, .Y = 450.0f};
 
-            ui_vertical_layout LayoutContext_A = UIEnterVerticalLayout(Container);
-            {
-            };
-            UILeaveVerticalLayout(&LayoutContext_A, Window);
+                    //
+                    // Now... The titlebar itself wants content. And so.. there's a root version (above) and there's a
+                    // non-root version right? And both just work. Sort of... Ah it's just that the non-root is able to do things
+                    // like: construct itself from the content. Obviously this would be horizontal.
+                    //
+
+                    ui_vertical_layout *TitleBarContainer = UIEnterVerticalLayout(TitleBar, Window);
+                    if(TitleBarContainer)
+                    {
+                        //
+                        // UIPushVerticalContent() // Some button
+                        // UIPushVerticalContent() // Some button
+                        // UIPushVerticalContent() // Some button
+                        //
+                    }
+                }
+            }
+
+
         }
     }
 }
