@@ -13,10 +13,9 @@ int main()
     ui_window_params Params =
     {
         .FrameMemorySize = UI_KIB(16),
-        .Scheduler       =
+        .LayoutContext   = 
         {
-            .TaskPayloadSize = UI_KIB(16), // TODO: Rename to frame memory size?
-            .EntryCount      = 64,
+            .BucketByteSize = UI_KIB(16),
         },
     };
 
@@ -26,7 +25,7 @@ int main()
 
     if(Window)
     {
-        while(true)
+        // while(true)
         {
             //
             // This is a bit weirder than I imagined. So any node that has no layout attached to it, is a leaf

@@ -108,14 +108,6 @@ typedef struct
 } ui_padding;
 
 
-//
-// "Describes" children, or I guess an element within a vertical context?
-// Could it be the parent itself? I don't think so, because the parent itself has just
-// more responsability in most cases?
-//
-
-
-
 // ==========================================================
 // [SECTION] : ALLOCATORS
 // ==========================================================
@@ -337,19 +329,9 @@ typedef struct
 } ui_place_major_axis_task;
 
 
-//
-// TODO:
-// Current writing this function as a main-axis placer only. Is it possible to generalize or do I
-// need another function? I think i'd be hard to generalize without adding extra branching?
-//
-
 static void
 UILayoutPlaceMajorAxis(const ui_place_major_axis_task *Tasks, uint32_t Count, float *OutPosition)
 {
-    //
-    // TODO: Validate Inputs Or Something
-    //
-
     uint32_t OutputOffset = 0;
     for(uint32_t TaskIdx = 0; TaskIdx < Count; ++TaskIdx)
     {
@@ -404,7 +386,7 @@ UILayoutPlaceMajorAxis(const ui_place_major_axis_task *Tasks, uint32_t Count, fl
      
             case UIAlignment_End:
             {
-                StartOffset = ParentSpace;
+                StartOffset = ParentSpace - ChildrenSize;
                 PlaceOffset = 0.0f;
             } break;
 
@@ -435,7 +417,8 @@ UILayoutPlaceMajorAxis(const ui_place_major_axis_task *Tasks, uint32_t Count, fl
             //
             // TODO:
             // I don't really know how to handle the overflow case. I think it might just be a completely different
-            // placing branch. We need a 2D cursor in that case...
+            // placing branch. We need a 2D cursor in that case... Well, this case would be the content overflows, but
+            // the content isn't allowed to. It would depend on some kind of policy.
             //
         }
 
@@ -455,254 +438,204 @@ UILayoutPlaceMajorAxis(const ui_place_major_axis_task *Tasks, uint32_t Count, fl
 }
 
 
+typedef struct
+{
+    float       ParentSize;
+    ui_padding  Padding;
+    UIAlignment Alignment;
+    float      *ChildSizes;
+    uint32_t    ChildCount;
+} ui_place_minor_axis_task;
+
+
+static void
+UILayoutPlaceMinorAxis(const ui_place_minor_axis_task *Tasks, uint32_t Count, float *OutPosition)
+{
+    uint32_t TotalChildCount = 0;
+
+    for(uint32_t TaskIdx = 0; TaskIdx < Count; ++TaskIdx)
+    {
+        const ui_place_minor_axis_task *Task = Tasks + TaskIdx;
+
+        for(uint32_t ChildIdx = 0; ChildIdx < Task->ChildCount; ++ChildIdx)
+        {
+            //
+            // Compute the available content space for the parent.
+            //
+            // TODO:
+            // x) Does not handle padding
+            // x) Does not handle border-width
+            //
+
+            float ChildSize   = Task->ChildSizes[ChildIdx];
+            float ParentSpace = Task->ParentSize - ChildSize;
+
+            //
+            // Compute the child's relative offset position.
+            //
+            // NOTE:
+            // Do we always want to compute the relative position or do we accept the parent's absolute position
+            // in parameter? Both are somewhat equivalent as I understand it.
+            //
+            // TODO:
+            // The position result does not account for the parent's padding.
+            //
+            
+            float Offset = 0.0f;
+            switch(Task->Alignment)
+            {
+
+            case UIAlignment_Start:        break;
+            case UIAlignment_SpaceAround:  break;
+            case UIAlignment_SpaceBetween: break;
+            case UIAlignment_SpaceEvenly:  break;
+
+            case UIAlignment_Center: Offset = (ParentSpace * 0.5f); break;
+            case UIAlignment_End:    Offset = (ParentSpace - ChildSize);
+
+            }
+
+            //
+            // Write the output.
+            //
+            // NOTE:
+            // Still unclear if we really want relative positions.
+            //
+
+            OutPosition[TotalChildCount + ChildIdx] = Offset;
+            TotalChildCount                        += 1;
+        }
+    }
+}
+
+
 // ==========================================================
-// [SECTION] : LAYOUT SCHEDULER
-// ========================================================
+// [SECTION] : LAYOUT COMMAND CONTEXT
+// ==========================================================
 
 
-//
-// TODO:
-// There's really no reason to store pointers instead of indices.
-// Also, we might break this data into different arrays depending on our access patterns.
-// It's only packed into one structure for simplicity.
-//
-
-typedef struct ui_scheduler_entry ui_scheduler_entry;
-struct ui_scheduler_entry
+typedef enum
 {
-    uint32_t            Counter;
-    uint32_t            ByteOffset;
-    ui_scheduler_entry *Head;
-    ui_scheduler_entry *Next;
-};
+    UIAxis_X = 0,
+    UIAxis_Y = 1,
+} UIAxis;
+
+
+typedef enum
+{
+    UILayoutTaskBucket_FixedX      = 0,
+    UILayoutTaskBucket_FixedY      = 1,
+    UILayoutTaskBucket_FitX        = 2,
+    UILayoutTaskBucket_FitY        = 3,
+    UILayoutTaskBucket_DistributeY = 4,
+    UILayoutTaskBucket_PlaceMajorY = 5,
+    UILayoutTaskBucket_PlaceMinorX = 6,
+
+    UILayoutTaskBucket_Count,
+} UILayoutTaskBucket;
 
 
 typedef struct
 {
-    ui_scheduler_entry *Entries;
-    uint32_t            EntryCount;
-    uint32_t            EntrySize;
-    ui_linear_allocator PayloadAllocator;
-} ui_scheduler;
+    ui_linear_allocator Pool;
+} ui_layout_context_bucket;
 
 
 typedef struct
 {
-    uint32_t Value;
-} ui_scheduler_task;
+    ui_layout_context_bucket Buckets[UILayoutTaskBucket_Count];
+} ui_layout_context;
 
 
 static bool
-UIIsValidScheduler(const ui_scheduler *Scheduler)
+UIIsValidLayoutTaskContext(const ui_layout_context *Context)
 {
-    bool Result = (Scheduler != 0);
+    bool Result = (Context != 0);
     return Result;
 }
 
 
-static ui_scheduler_entry *
-UIGetSchedulerEntryFromTask(ui_scheduler_task Task, const ui_scheduler *Scheduler)
+static ui_fixed_sizing_task *
+UIAcquireFixedLayoutTask(UIAxis Axis, ui_layout_context *Context)
 {
-    ui_scheduler_entry *Result = 0;
+    ui_fixed_sizing_task *Result = 0;
 
-    if(Task.Value < Scheduler->EntryCount)
+    if(UIIsValidLayoutTaskContext(Context))
     {
-        Result = (ui_scheduler_entry *)Scheduler->Entries + Task.Value;
-    }
+        ui_linear_allocator *BucketAllocator = 0;
 
-    return Result;
-}
-
-
-static ui_scheduler_task
-UIAcquireSchedulerTaskEntry(ui_scheduler *Scheduler)
-{
-    //
-    // TODO:
-    // Write this code properly.
-    //
-
-    ui_scheduler_task Result = {};
-
-    if(Scheduler)
-    {
-        if(Scheduler->EntryCount < Scheduler->EntrySize)
+        if(Axis == UIAxis_X)
         {
-            Result.Value           = Scheduler->EntryCount;
-            Scheduler->EntryCount += 1;
+            BucketAllocator = &Context->Buckets[UILayoutTaskBucket_FixedX].Pool;
+        }
+        else if(Axis == UIAxis_Y)
+        {
+            BucketAllocator = &Context->Buckets[UILayoutTaskBucket_FixedY].Pool;
+        }
+
+        if(UIIsValidLinearAllocator(BucketAllocator))
+        {
+            Result = UIAllocateLinearStruct(ui_fixed_sizing_task, BucketAllocator);
         }
     }
 
     return Result;
 }
-
-
-static void
-UIInjectSchedulerDependency(ui_scheduler_task Dependent, ui_scheduler_task Dependency, ui_scheduler *Scheduler)
-{
-    //
-    // TODO:
-    // Write this code properly.
-    //
-
-    if(Scheduler)
-    {
-        ui_scheduler_entry *DependentEntry  = UIGetSchedulerEntryFromTask(Dependent , Scheduler);
-        ui_scheduler_entry *DependencyEntry = UIGetSchedulerEntryFromTask(Dependency, Scheduler);
-
-        if(DependentEntry && DependencyEntry)
-        {
-            //
-            // Something like that...
-            //
-
-            DependentEntry->Counter += 1;
-
-            if(DependencyEntry->Head)
-            {
-                DependencyEntry->Head->Next = DependentEntry;
-            }
-            DependencyEntry->Head = DependencyEntry;
-        }
-    }
-}
-
-
-static void *
-UIAcquireSchedulerPayloadSlice(uint64_t Size, ui_scheduler_task Task, ui_scheduler *Scheduler)
-{
-    //
-    // TODO:
-    // Write this code properly.
-    //
-
-    void *Result = 0;
-
-    if(Scheduler)
-    {
-        //
-        // BUG:
-        // 0 is not a valid check since the first command write will be at the 0 offset which would
-        // allow one to write multiple times to the same slot.
-        //
-
-        ui_scheduler_entry *Entry = UIGetSchedulerEntryFromTask(Task, Scheduler);
-        if(Entry && Entry->ByteOffset == 0)
-        {
-            //
-            // TODO:
-            // We should care about alignment... right? Meh, maybe not for now since this might change allocator anyway.
-            //
-
-            void *Data = UIAllocateLinear(Size, &Scheduler->PayloadAllocator);
-            if(Data)
-            {
-                Entry->ByteOffset = Scheduler->PayloadAllocator.At - Size;
-                Result            = Data;
-            }
-        }
-    }
-
-    return Result;
-}
-
-
-//
-// NOTE:
-// Could we just be taking in the command? Do we want to depend on that type?
-// We internally already do depend on this type. Should the outer code? Why not?
-//
-
-
-static void
-UIPushSchedulerFixedSizingTaskData(ui_scheduler_task Task, float Size, float MinSize, float MaxSize, ui_scheduler *Scheduler)
-{
-    if(UIIsValidScheduler(Scheduler))
-    {
-        //
-        // TODO:
-        // This is not a valid way to check if an entry has data already mapped to it.
-        //
-
-        ui_scheduler_entry *Entry = UIGetSchedulerEntryFromTask(Task, Scheduler);
-        if(Entry && Entry->ByteOffset == 0)
-        {
-            ui_fixed_sizing_task *Task = UIAllocateLinearStruct(ui_fixed_sizing_task, &Scheduler->PayloadAllocator);
-            if(Task)
-            {
-                Task->Size    = Size;
-                Task->MinSize = MinSize;
-                Task->MaxSize = MaxSize;
-            }
-        }
-    }
-}
-
-
-//
-// Uhm, well this still fits the same model as above since the above code doens't take in any dependency (it doesn't have any)
-//
-
-static void
-UIPushSchedulerSpaceDistributionTaskData(ui_scheduler_task Task)
-{
-}
-
-
 
 
 typedef struct
 {
-    uint64_t TaskPayloadSize;
-    uint32_t EntryCount;
-} ui_scheduler_params;
+    uint32_t BucketByteSize;
+} ui_layout_context_params;
 
 
 static uint64_t
-UISchedulerMemorySize(ui_scheduler_params Params)
+UILayoutContextMemorySize(ui_layout_context_params Params)
 {
     ui_memory_size_counter Counter = {};
     {
-        UIMemorySizeCountBuffer(ui_scheduler_entry, Params.EntryCount, &Counter);
-        UIMemorySizeCountBuffer(uint8_t, Params.TaskPayloadSize, &Counter);
-        UIMemorySizeCountStruct(ui_scheduler, &Counter);
+        UIMemorySizeCountStruct(ui_layout_context, &Counter);
+
+        for(uint32_t BucketIdx = 0; BucketIdx < UILayoutTaskBucket_Count; ++BucketIdx)
+        {
+            UIMemorySizeCountBuffer(uint8_t, Params.BucketByteSize, &Counter);
+        }
     }
 
-    uint64_t Result = UIMemorySizeCounterWorstCase(UI_ALIGN_OF(ui_scheduler), Counter);
+    uint64_t Result = UIMemorySizeCounterWorstCase(UI_ALIGN_OF(ui_layout_context), Counter);
     return Result;
 }
 
 
-static ui_scheduler *
-UISchedulerMemoryInit(void *Memory, uint64_t Size, ui_scheduler_params Params)
+static ui_layout_context *
+UILayoutContextMemoryInit(void *Memory, uint64_t Size, ui_layout_context_params Params)
 {
-    ui_scheduler *Result = 0;
+    ui_layout_context *Result = 0;
 
     ui_linear_allocator Allocator = UILinearAllocator(Memory, Size);
     if(UIIsValidLinearAllocator(&Allocator))
     {
-        ui_scheduler_entry *Entries   = UIAllocateLinearArray(Params.EntryCount, ui_scheduler_entry, &Allocator);
-        uint8_t            *Payload   = UIAllocateLinearArray(Params.TaskPayloadSize, uint8_t, &Allocator);
-        ui_scheduler       *Scheduler = UIAllocateLinearStruct(ui_scheduler, &Allocator);
+        ui_layout_context *Context = UIAllocateLinearStruct(ui_layout_context, &Allocator);
 
-        if(Scheduler)
+        ui_linear_allocator Allocators[UILayoutTaskBucket_Count] = {};
+        for(uint32_t BucketIdx = 0; BucketIdx < UILayoutTaskBucket_Count; ++BucketIdx)
         {
-            Scheduler->PayloadAllocator = UILinearAllocator(Payload, Params.TaskPayloadSize);
-            Scheduler->Entries          = Entries;
-            Scheduler->EntryCount       = 0;
-            Scheduler->EntrySize        = Params.EntryCount;
-
-            for(uint32_t EntryIdx = 0; EntryIdx < Params.EntryCount; ++EntryIdx)
+            uint8_t *Buffer = (uint8_t *)UIAllocateLinearAligned(Params.BucketByteSize, UI_ALIGN_OF(uint8_t), &Allocator);
+            if(Buffer)
             {
-                ui_scheduler_entry *Entry = Scheduler->Entries + EntryIdx;
-                Entry->Counter    = 0;
-                Entry->ByteOffset = 0;
-                Entry->Head       = 0;
-                Entry->Next       = 0;
+                Allocators[BucketIdx] = UILinearAllocator(Buffer, Params.BucketByteSize); 
             }
         }
 
-        Result = Scheduler;
+        if(Context)
+        {
+            for(uint32_t BucketIdx = 0; BucketIdx < UILayoutTaskBucket_Count; ++BucketIdx)
+            {
+                Context->Buckets[BucketIdx].Pool = Allocators[BucketIdx];
+            }
+        }
+
+        Result = Context;
     }
 
     return Result;
@@ -717,14 +650,14 @@ UISchedulerMemoryInit(void *Memory, uint64_t Size, ui_scheduler_params Params)
 typedef struct
 {
     ui_linear_allocator FrameAllocator;
-    ui_scheduler       *Scheduler;
+    ui_layout_context  *LayoutContext;
 } ui_window;
 
 
 typedef struct
 {
-    uint64_t            FrameMemorySize;
-    ui_scheduler_params Scheduler;
+    uint64_t                 FrameMemorySize;
+    ui_layout_context_params LayoutContext;
 } ui_window_params;
 
 
@@ -733,9 +666,9 @@ UIWindowMemorySize(ui_window_params Params)
 {
     ui_memory_size_counter Counter = {};
     {
-        uint64_t SchedulerSize = UISchedulerMemorySize(Params.Scheduler);
+        uint64_t LayoutContextSize = UILayoutContextMemorySize(Params.LayoutContext);
         {
-            UIMemorySizeCountBuffer(uint8_t, SchedulerSize, &Counter);
+            UIMemorySizeCountBuffer(uint8_t, LayoutContextSize, &Counter);
         }
 
         UIMemorySizeCountBuffer(uint8_t, Params.FrameMemorySize, &Counter);
@@ -755,16 +688,16 @@ UIWindowMemoryInit(void *Memory, uint64_t Size, ui_window_params Params)
     ui_linear_allocator Allocator = UILinearAllocator(Memory, Size);
     if(UIIsValidLinearAllocator(&Allocator))
     {
-        uint64_t SchedulerSize = UISchedulerMemorySize(Params.Scheduler);
+        uint64_t LayoutContextSize = UILayoutContextMemorySize(Params.LayoutContext);
 
-        uint8_t   *SchedulerMemory = UIAllocateLinearArray(SchedulerSize, uint8_t, &Allocator);
-        uint8_t   *FrameMemory     = UIAllocateLinearArray(Params.FrameMemorySize, uint8_t, &Allocator);
-        ui_window *Window          = UIAllocateLinearStruct(ui_window, &Allocator);
+        uint8_t   *LayoutContextMemory = UIAllocateLinearArray(LayoutContextSize, uint8_t, &Allocator);
+        uint8_t   *FrameMemory         = UIAllocateLinearArray(Params.FrameMemorySize, uint8_t, &Allocator);
+        ui_window *Window              = UIAllocateLinearStruct(ui_window, &Allocator);
 
         if(Window)
         {
             Window->FrameAllocator = UILinearAllocator(FrameMemory, Params.FrameMemorySize);
-            Window->Scheduler      = UISchedulerMemoryInit(SchedulerMemory, SchedulerSize, Params.Scheduler);
+            Window->LayoutContext  = UILayoutContextMemoryInit(LayoutContextMemory, LayoutContextSize, Params.LayoutContext);
         }
 
         Result = Window;
@@ -773,19 +706,6 @@ UIWindowMemoryInit(void *Memory, uint64_t Size, ui_window_params Params)
     return Result;
 }
 
-
-// ==========================================================
-// [SECTION] : TEMPORARY
-// ==========================================================
-
-
-typedef struct
-{
-    ui_sizing SizingX;
-    ui_sizing SizingY;
-    ui_size   MinSize;
-    ui_size   MaxSize;
-} ui_node_desc;
 
 // ==========================================================
 // [SECTION] : VERTICAL LAYOUT | WINDOW
@@ -847,7 +767,7 @@ UIEnterVerticalLayout(const ui_vertical_content *Content, ui_window *Window)
         if(Layout)
         {
             Layout->Spacing     = 0.0f;
-            Layout->Padding     = {};
+            Layout->Padding     = (ui_padding){};
             Layout->BorderWidth = 0.0f;
             Layout->XAlignment  = UIAlignment_Start;
             Layout->YAlignment  = UIAlignment_Start;
@@ -895,10 +815,10 @@ UIPushVerticalContent(ui_vertical_layout *Layout)
             //
 
             Result = &Node->Content;
-            Result->SizingX = {};
-            Result->SizingY = {};
-            Result->Min     = {};
-            Result->Max     = {};
+            Result->SizingX = (ui_sizing){};
+            Result->SizingY = (ui_sizing){};
+            Result->Min     = (ui_size){};
+            Result->Max     = (ui_size){};
         }
     }
 
@@ -909,82 +829,74 @@ UIPushVerticalContent(ui_vertical_layout *Layout)
 static void
 UILeaveVerticalLayout(const ui_vertical_layout *Layout, ui_window *Window)
 {
+    //
+    // TODO:
+    // 1) input validation
+    // 2) reduce code dup
+    //
+
     if(Layout && Window)
     {
-        ui_scheduler *Scheduler = Window->Scheduler;
-
         //
-        // Okay.. and again, how do we schedule ours tasks. This is the part that's missing.
-        // Yeah I don't know. This whole thing is quite elusive. What do I have to do for sure here:
-        // x) Major Axis Placement -> Some sort of reference to children, vertical layout parameters, depends on:
-        // x) Minor Axis Placement -> Some sort of reference to children, vertical layout parameters, depends on:
-        // x) Major Axis Resizing  -> Some sort of reference to children, vertical layout parameters, depends on:
-        //
-        // Do I HAVE to do these here:
-        // x) Child sizing task?
-        // x) Child dependency injection?
-        //
-        // Think in layout and content.
-        //
-        // Okay, I have the strongest structure yet. It is still hard though. I have everything HERE to make decisions which
-        // I think is the correct approach instead of scattering knowledge around. Let's say we were to use the same scheduler
-        // approach.
-        //
-
-        //
-        // Let's just try and figure out one axis by bruteforcing.
+        // Container
         //
 
         if(Layout->SizingX.Type == UISizing_Fixed)
         {
-        }
-        else if(Layout->SizingX.Type == UISizing_Percent)
-        {
-        }
-        else if(Layout->SizingX.Type == UISizing_Fit)
-        {
-            //
-            // This is already sort of incorrect. Well. Uhm. This is just weird. We have to weirdly reason through the dependency
-            // chain which can't be the correct approach. For example, if I push some sort of resizing task, then I'm basically
-            // wiring the same dependency chain twice. I could then only inject the dependency on the parent when there's no
-            // resize task, but that requires understanding the full dependency chain. And it feels like the scheduler is not
-            // really doing its job.
-            //
-            // Perhaps something else we could explore, is a dependency chain resolver, we specify what we might depend on and it
-            // runs the magic (for example: For my computation to be exact I depend on my parent's natural size, I depend on these node's
-            // final size, I depend on this node's final size. Can we somehow separate things such that the dependency wiring is much
-            // easier? We want to do the minimum work here such that it's super easy to do stuff. This is simply too hard. I think
-            // most of the structure around the code is correct, just this particular task/scheduler idea is incorrect, but maybe pointing
-            // in the correct direction.
-            //
-
-            ui_scheduler_task ParentTask = UIAcquireSchedulerTaskEntry(Scheduler);
-            for(ui_vertical_content_node *Node = Layout->FstContent; Node != 0; Node = Node->Next)
+            ui_fixed_sizing_task *Task = UIAcquireFixedLayoutTask(UIAxis_X, Window->LayoutContext);
+            if(Task)
             {
-                ui_vertical_content Content = Node->Content;
-
-                if(Content.SizingX.Type == UISizing_Fixed)
-                {
-                    ui_scheduler_task ChildTask = UIAcquireSchedulerTaskEntry(Scheduler);
-                    {
-                        UIPushSchedulerFixedSizingTaskData(ChildTask, Content.SizingX.Fixed, Content.Min.X, Content.Max.X, Scheduler);
-                        UIInjectSchedulerDependency(ParentTask, ChildTask, Scheduler);
-                    }
-                }
-                else if(Content.SizingX.Type == UISizing_Percent)
-                {
-                }
-                else if(Content.SizingX.Type == UISizing_Fit)
-                {
-                }
+                Task->Size    = Layout->SizingX.Fixed;
+                Task->MinSize = Layout->MinSize.X;
+                Task->MaxSize = Layout->MaxSize.X;
             }
-
-            UIInjectSchedulerDependency(ui_scheduler_task Dependent, ui_scheduler_task Dependency, ui_scheduler *Scheduler);
         }
+
+        if(Layout->SizingY.Type == UISizing_Fixed)
+        {
+            ui_fixed_sizing_task *Task = UIAcquireFixedLayoutTask(UIAxis_Y, Window->LayoutContext);
+            if(Task)
+            {
+                Task->Size    = Layout->SizingY.Fixed;
+                Task->MinSize = Layout->MinSize.Y;
+                Task->MaxSize = Layout->MaxSize.Y;
+            }
+        }
+
+        //
+        // Content
+        //
 
         for(ui_vertical_content_node *Node = Layout->FstContent; Node != 0; Node = Node->Next)
         {
+            ui_vertical_content *Content = &Node->Content;
+
+            if(Content->SizingX.Type == UISizing_Fixed)
+            {
+                ui_fixed_sizing_task *Task = UIAcquireFixedLayoutTask(UIAxis_X, Window->LayoutContext);
+                if(Task)
+                {
+                    Task->Size    = Content->SizingX.Fixed;
+                    Task->MinSize = Content->Min.X;
+                    Task->MaxSize = Content->Max.X;
+                }
+            }
+    
+            if(Content->SizingY.Type == UISizing_Fixed)
+            {
+                ui_fixed_sizing_task *Task = UIAcquireFixedLayoutTask(UIAxis_Y, Window->LayoutContext);
+                if(Task)
+                {
+                    Task->Size    = Content->SizingY.Fixed;
+                    Task->MinSize = Content->Min.Y;
+                    Task->MaxSize = Content->Max.Y;
+                }
+            }
         }
+
+        //
+        // Place
+        //
     }
 }
 
