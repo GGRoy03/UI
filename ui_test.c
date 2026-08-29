@@ -5,24 +5,17 @@
 
 int main()
 {
-    //
-    // x) Allocate commands for that window (from a vertical layout context)
-    // x) Process these commands
-    //
-
-    ui_window_params Params =
+    ui_directed_graph_params Params =
     {
-        .FrameMemorySize = UI_KIB(16),
-        .LayoutContext   = 
-        {
-            .BucketByteSize = UI_KIB(16),
-        },
+        .NodeCount = 100,
+        .EdgeCount = 200,
     };
 
-    uint64_t   WindowSize   = UIWindowMemorySize(Params);
-    void      *WindowMemory = malloc(WindowSize);
-    ui_window *Window       = UIWindowMemoryInit(WindowMemory, WindowSize, Params);
+    uint64_t           GraphSize = UIDirectedGraphMemorySize(Params);
+    void              *Memory    = malloc(GraphSize);
+    ui_directed_graph *Graph     = UIDirectedGraphMemoryInit(Memory, GraphSize, Params);
 
+    ui_window *Window = 0;
     if(Window)
     {
         // while(true)
@@ -87,8 +80,7 @@ int main()
                     TitleBar->SizingY = (ui_sizing){.Type = UISizing_Fixed, .Fixed = 450.0f};
                     TitleBar->Min     = (ui_size){.X = 250.0f, .Y = 450.0f};
                     TitleBar->Max     = (ui_size){.X = 250.0f, .Y = 450.0f};
-
-                    //
+//
                     // Now... The titlebar itself wants content. And so.. there's a root version (above) and there's a
                     // non-root version right? And both just work. Sort of... Ah it's just that the non-root is able to do things
                     // like: construct itself from the content. Obviously this would be horizontal.

@@ -1,8 +1,5 @@
-# ifndef UI_HEADEhhh
+# ifndef UI_HEADER
 #   define UI_HEADER
-# endif
-
-# ifdef UI_HEADER
 
 
 // ==========================================================
@@ -13,6 +10,41 @@
 # include <stdint.h>
 # include <assert.h>
 # include <stdbool.h>
+
+
+// ==========================================================
+// [SECTION] BIT TABLE
+// ==========================================================
+// [DESCRIPTION]
+// ==========================================================
+
+
+typedef struct ui_bit_table ui_bit_table;
+
+
+typedef struct
+{
+    uint32_t EntryCount;
+} ui_bit_table_params;
+
+// ==========================================================
+// [SECTION] DIRECTED GRAPH
+// ==========================================================
+// [DESCRIPTION]
+// ==========================================================
+
+
+typedef struct
+{
+    uint32_t ID;
+} ui_graph_node_handle;
+
+
+typedef struct ui_directed_graph ui_directed_graph;
+
+
+# ifdef UI_IMPLEMENTATION
+# endif
 
 
 // ==========================================================
@@ -50,11 +82,12 @@
 # define UI_MIN(A, B) ((A <= B) ? A : B)
 # define UI_MAX(A, B) ((A >= B) ? A : B)
 
-# define UI_VALIDATE_ENUM(Value, MaxExclusive) ((Value >= 0) && (Value < MaxExclusive))
+# define UI_IS_VALID_ENUM(Value, MaxExclusive) ((Value >= 0) && (Value < MaxExclusive))
 # define UI_ARRAY_COUNT(Array)                 ((sizeof(Array) / sizeof(Array[0])))
 
 # define UI_BIT_MASK(BitCount)          ((1ull << BitCount) - 1ull)
 # define UI_CHECK_BIT_MASK(Value, Mask) ((Value & Mask))
+# define UI_IS_POWER_OF_TWO(X)          ((X) && ((X & (X - 1)) == 0))
 
 
 // ==========================================================
@@ -117,10 +150,6 @@ static const size_t UI_LINEAR_ALLOCATOR_DEFAULT_ALIGNMENT = 64;
 static const size_t UI_CHUNK_ALLOCATOR_CHUNK_SIZE         = UI_KIB(16);
 
 
-//
-// TODO: Align Of (Compiler Detection?)
-//
-
 #define UIAllocateLinearArray(Count, Type, Allocator) (Type *)UIAllocateLinearAligned((Count * sizeof(Type)), UI_ALIGN_OF(Type), Allocator)
 #define UIAllocateLinearStruct(Type, Allocator)       (Type *)UIAllocateLinearAligned((sizeof(Type)), UI_ALIGN_OF(Type), Allocator)
 
@@ -159,7 +188,7 @@ UIAlignForward(uintptr_t Pointer, uintptr_t Align)
 
 
 static bool
-UIIsValidLinearAllocator(ui_linear_allocator *Allocator)
+UIIsValidLinearAllocator(const ui_linear_allocator *Allocator)
 {
     bool Result = Allocator && Allocator->Buffer;
     return Result;
@@ -212,29 +241,26 @@ UIAllocateLinear(size_t Size, ui_linear_allocator *Allocator)
 
 typedef struct
 {
-    uint32_t Count;
-    uint64_t SizeOfType;
-    uint64_t Align;
-} ui_linear_array_desc;
+    const void *Data;
+    uint32_t    Count;
+    bool        IsValid;
+} ui_linear_allocator_view;
 
 
-static uint64_t
-UISizeOfLinearArray(const ui_linear_array_desc *Descriptions, uint32_t Count)
+static ui_linear_allocator_view
+UILinearAllocatorBufferView(uint32_t KeySize, const ui_linear_allocator *Allocator)
 {
-    uint64_t Result = 0;
+    ui_linear_allocator_view Result = {};
 
-    if(Descriptions)
+    if(UIIsValidLinearAllocator(Allocator))
     {
-        uint64_t Current = 0;
-        for(uint32_t DescIdx = 0; DescIdx < Count; ++DescIdx)
+        if(KeySize != 0)
         {
-            const ui_linear_array_desc *Desc = Descriptions + DescIdx;
+            assert(Allocator->At % KeySize == 0);
 
-            uintptr_t Aligned    = UIAlignForward(Current, Desc->Align);
-            uint64_t  Difference = Aligned - Current;
-            uint64_t  ArraySize  = Desc->Count * Desc->SizeOfType;
-
-            Current += (Difference + ArraySize);
+            Result.Data    = Allocator->Buffer;
+            Result.Count   = Allocator->At / KeySize;
+            Result.IsValid = true;
         }
     }
 
@@ -277,11 +303,6 @@ UIMemorySizeCounterWorstCase(uint32_t Align, ui_memory_size_counter Counter)
 
 // ==========================================================
 // [SECTION] : LAYOUT ALGORITHMS
-//
-// NOTE:
-// x) The task naming is not really appropriate as a task
-// is associated with the scheduler while this has nothing
-// to do with it.
 // ==========================================================
 
 
@@ -293,28 +314,23 @@ typedef struct
 } ui_fixed_sizing_task;
 
 
-static void
-UILayoutComputeFixedSizing(const ui_fixed_sizing_task *Tasks, uint32_t Count, float *OutSize)
+static float
+UILayoutComputeFixedSizing(float Size, float MinSize, float MaxSize)
 {
-    //
-    // TODO: Validate Inputs Or Something
-    //
+    float Result = 0.0f;
 
-    for(uint32_t TaskIdx = 0; TaskIdx < Count; ++TaskIdx)
+    float Min = UI_MAX(MinSize, 0.0f);
+    float Max = UI_MAX(MaxSize, 0.0f);
+    if(MinSize <= MaxSize)
     {
-        ui_fixed_sizing_task Task = Tasks[TaskIdx];
-
-        float MinSize = UI_MAX(Task.MinSize, 0.0f);
-        float MaxSize = UI_MAX(Task.MaxSize, 0.0f);
-        if(MinSize <= MaxSize)
-        {
-            OutSize[TaskIdx] = UI_MIN(UI_MAX(Task.Size, MinSize), MaxSize);
-        }
-        else
-        {
-            OutSize[TaskIdx] = 0.0f;
-        }
+        Result = UI_MIN(UI_MAX(Size, MinSize), MaxSize);
     }
+    else
+    {
+        Result = 0.0f;
+    }
+
+    return Result;
 }
 
 
@@ -510,135 +526,596 @@ UILayoutPlaceMinorAxis(const ui_place_minor_axis_task *Tasks, uint32_t Count, fl
 
 
 // ==========================================================
-// [SECTION] : LAYOUT COMMAND CONTEXT
+// [SECTION] BITSET
+// ==========================================================
+// [HISTORY]
+// ==========================================================
+// [TODO]
+// - Test
+// - Write the API
+// - Write the init code
 // ==========================================================
 
 
-typedef enum
+struct ui_bit_table
 {
-    UIAxis_X = 0,
-    UIAxis_Y = 1,
-} UIAxis;
-
-
-typedef enum
-{
-    UILayoutTaskBucket_FixedX      = 0,
-    UILayoutTaskBucket_FixedY      = 1,
-    UILayoutTaskBucket_FitX        = 2,
-    UILayoutTaskBucket_FitY        = 3,
-    UILayoutTaskBucket_DistributeY = 4,
-    UILayoutTaskBucket_PlaceMajorY = 5,
-    UILayoutTaskBucket_PlaceMinorX = 6,
-
-    UILayoutTaskBucket_Count,
-} UILayoutTaskBucket;
+    uint64_t *Chunks;
+    uint32_t  ChunkCount;
+    uint32_t  EntryCount;
+    uint32_t  BitPerChunk;
+};
 
 
 typedef struct
 {
-    ui_linear_allocator Pool;
-} ui_layout_context_bucket;
-
-
-typedef struct
-{
-    ui_layout_context_bucket Buckets[UILayoutTaskBucket_Count];
-} ui_layout_context;
+    uint64_t *Chunk;
+    uint64_t  BitMask;
+    bool      IsValid;
+} ui_bit_table_entry;
 
 
 static bool
-UIIsValidLayoutTaskContext(const ui_layout_context *Context)
+UIIsValidBitTable(const ui_bit_table *BitTable)
 {
-    bool Result = (Context != 0);
+    bool Result = BitTable && BitTable->Chunks;
     return Result;
 }
 
 
-static ui_fixed_sizing_task *
-UIAcquireFixedLayoutTask(UIAxis Axis, ui_layout_context *Context)
+static ui_bit_table
+UIBitTable(uint64_t *Chunks, uint32_t ChunkCount)
 {
-    ui_fixed_sizing_task *Result = 0;
-
-    if(UIIsValidLayoutTaskContext(Context))
+    ui_bit_table Result =
     {
-        ui_linear_allocator *BucketAllocator = 0;
+    };
 
-        if(Axis == UIAxis_X)
-        {
-            BucketAllocator = &Context->Buckets[UILayoutTaskBucket_FixedX].Pool;
-        }
-        else if(Axis == UIAxis_Y)
-        {
-            BucketAllocator = &Context->Buckets[UILayoutTaskBucket_FixedY].Pool;
-        }
+    return Result;
+}
 
-        if(UIIsValidLinearAllocator(BucketAllocator))
+
+static ui_bit_table_entry
+UIBitTableGetEntry(uint32_t Index, const ui_bit_table *BitTable)
+{
+    assert(UIIsValidBitTable(BitTable));
+
+    ui_bit_table_entry Result = {};
+
+    if(Index < BitTable->EntryCount)
+    {
+        assert(UI_IS_POWER_OF_TWO(BitTable->BitPerChunk));
+
+        uint32_t ChunkIndex = Index / BitTable->BitPerChunk;
+        uint32_t BitIndex   = Index % BitTable->BitPerChunk;
+
+        assert(ChunkIndex < BitTable->ChunkCount);
+
+        Result.Chunk   = BitTable->Chunks + ChunkIndex;
+        Result.BitMask = (1ULL << BitIndex);
+        Result.IsValid = true;
+    }
+
+    return Result;
+}
+
+
+static void
+UIBitTableSet(uint32_t Index, ui_bit_table *BitTable)
+{
+    if(UIIsValidBitTable(BitTable))
+    {
+        ui_bit_table_entry Entry = UIBitTableGetEntry(Index, BitTable);
+        if(Entry.IsValid)
         {
-            Result = UIAllocateLinearStruct(ui_fixed_sizing_task, BucketAllocator);
+            *Entry.Chunk |= Entry.BitMask;
+        }
+    }
+}
+
+
+static void
+UIBitTableClear(uint32_t Index, ui_bit_table *BitTable)
+{
+    if(UIIsValidBitTable(BitTable))
+    {
+        ui_bit_table_entry Entry = UIBitTableGetEntry(Index, BitTable);
+        if(Entry.IsValid)
+        {
+            *Entry.Chunk &= ~Entry.BitMask;
+        }
+    }
+}
+
+
+static bool
+UIBitTableCheck(uint32_t Index, const ui_bit_table *BitTable)
+{
+    bool Result = false;
+
+    if(UIIsValidBitTable(BitTable))
+    {
+        ui_bit_table_entry Entry = UIBitTableGetEntry(Index, BitTable);
+        if(Entry.IsValid)
+        {
+            Result = *Entry.Chunk & Entry.BitMask;
         }
     }
 
     return Result;
+}
+
+
+// ==========================================================
+// [SECTION] DIRECTED GRAPH
+// ==========================================================
+// [HISTORY]
+// [8/27/2026]: Basic Directed Graph Implementation
+// ==========================================================
+
+
+typedef struct
+{
+    uint32_t TargetNodeIndex;
+    uint32_t NextEdgeIndex;
+} ui_graph_edge;
+
+
+typedef struct
+{
+    uint32_t FirstEdgeIndex;
+    uint32_t Degree;
+} ui_graph_node;
+
+
+struct ui_directed_graph
+{
+    ui_graph_node *Nodes;
+    uint32_t       NodeCount;
+    ui_graph_edge *Edges;
+    uint32_t       EdgeCount;
+};
+
+
+static bool
+UIIsValidDirectedGraph(const ui_directed_graph *Graph)
+{
+    bool Result = Graph && Graph->Nodes && Graph->Edges;
+    return Result;
+}
+
+
+static ui_graph_node_handle
+UIGraphNodeHandleFromIndex(uint32_t Index)
+{
+    assert(Index != 0);
+
+    ui_graph_node_handle Result = {.ID = Index};
+    return Result;
+}
+
+
+static ui_graph_node *
+UIGetGraphNodeSentinel(const ui_directed_graph *Graph)
+{
+    assert(UIIsValidDirectedGraph(Graph));
+
+    ui_graph_node *Result = Graph->Nodes;
+    return Result;
+}
+
+
+static ui_graph_node *
+UIGetGraphNode(uint32_t Index, const ui_directed_graph *Graph)
+{
+    assert(UIIsValidDirectedGraph(Graph));
+
+    ui_graph_node *Result = 0;
+
+    if(Index < Graph->NodeCount)
+    {
+        Result = Graph->Nodes + Index;
+    }
+
+    return Result;
+}
+
+
+static ui_graph_node *
+UIGetGraphNodeFromHandle(ui_graph_node_handle Handle, const ui_directed_graph *Graph)
+{
+    ui_graph_node *Result = UIGetGraphNode(Handle.ID, Graph);
+    return Result;
+}
+
+
+static ui_graph_edge *
+UIGetGraphEdgeSentinel(const ui_directed_graph *Graph)
+{
+    assert(UIIsValidDirectedGraph(Graph));
+
+    ui_graph_edge *Result = Graph->Edges;
+    return Result;
+}
+
+
+static ui_graph_edge *
+UIGetGraphEdge(uint32_t Index, const ui_directed_graph *Graph)
+{
+    assert(UIIsValidDirectedGraph(Graph));
+
+    ui_graph_edge *Result = 0;
+
+    if(Index < Graph->EdgeCount)
+    {
+        Result = Graph->Edges + Index;
+    }
+
+    return Result;
+}
+
+
+static ui_graph_node *
+UIGetGraphNodeFromEdge(uint32_t Index, const ui_directed_graph *Graph)
+{
+    assert(Graph);
+
+    ui_graph_node *Result = 0;
+
+    ui_graph_edge *Edge = UIGetGraphEdge(Index, Graph);
+    if(Edge)
+    {
+        Result = UIGetGraphNode(Edge->TargetNodeIndex, Graph);
+    }
+
+    return Result;
+}
+
+
+static uint32_t
+UIGetNextGraphEdgeFromEdge(uint32_t Index, const ui_directed_graph *Graph)
+{
+    assert(UIIsValidDirectedGraph(Graph));
+
+    uint32_t Result = {};
+
+    ui_graph_edge *Edge = UIGetGraphEdge(Index, Graph);
+    if(Edge)
+    {
+        Result = Edge->NextEdgeIndex;
+    }
+
+    return Result;
+}
+
+
+static void
+UIFreeGraphEdge(uint32_t EdgeIndex, ui_directed_graph *Graph)
+{
+    assert(UIIsValidDirectedGraph(Graph));
+
+    ui_graph_edge *Sentinel = UIGetGraphEdgeSentinel(Graph);
+    assert(Sentinel);
+
+    ui_graph_edge *Edge = UIGetGraphEdge(EdgeIndex, Graph);
+    if(Edge)
+    {
+        assert(Edge != Sentinel);
+
+        Edge->TargetNodeIndex = 0;
+        Edge->NextEdgeIndex   = Sentinel->NextEdgeIndex;
+
+        Sentinel->NextEdgeIndex = EdgeIndex;
+    }
+}
+
+
+static uint32_t
+UIPopFreeGraphEdge(ui_directed_graph *Graph)
+{
+    assert(UIIsValidDirectedGraph(Graph));
+
+    ui_graph_edge *Sentinel = UIGetGraphEdgeSentinel(Graph);
+    assert(Sentinel);
+
+    uint32_t       EdgeIndex = Sentinel->NextEdgeIndex;
+    ui_graph_edge *Result    = UIGetGraphEdge(EdgeIndex, Graph);
+    if(Result)
+    {
+        Sentinel->NextEdgeIndex = Result->NextEdgeIndex;
+    }
+
+    return EdgeIndex;
+}
+
+
+static uint32_t
+UIPopFreeGraphNode(ui_directed_graph *Graph)
+{
+    assert(UIIsValidDirectedGraph(Graph));
+
+    uint32_t Result = 0;
+
+    ui_graph_node *Sentinel = UIGetGraphNodeSentinel(Graph);
+    assert(Sentinel);
+
+    uint32_t       EdgeIndex = Sentinel->FirstEdgeIndex;
+    ui_graph_edge *Edge      = UIGetGraphEdge(Sentinel->FirstEdgeIndex, Graph);
+    if(Edge)
+    {
+        uint32_t       NodeIndex = Edge->TargetNodeIndex;
+        ui_graph_node *Node      = UIGetGraphNode(Edge->TargetNodeIndex, Graph);
+        if(Node)
+        {
+            assert(Node != Sentinel);
+
+            UIFreeGraphEdge(EdgeIndex, Graph);
+
+            Result                   = NodeIndex;
+            Sentinel->FirstEdgeIndex = Node->FirstEdgeIndex;
+        }
+    }
+
+    return Result;
+}
+
+
+static uint32_t
+UIAddGraphNode(ui_directed_graph *Graph)
+{
+    uint32_t Result = 0;
+    if(UIIsValidDirectedGraph(Graph))
+    {
+        uint32_t       NodeIndex = UIPopFreeGraphNode(Graph);
+        ui_graph_node *Node      = UIGetGraphNode(NodeIndex, Graph);
+
+        if(Node)
+        {
+            Node->Degree         = 0;
+            Node->FirstEdgeIndex = 0;
+        }
+
+        Result = NodeIndex;
+    }
+
+    return Result;
+}
+
+
+static void
+UIRemoveGraphNode(ui_graph_node_handle Handle, ui_directed_graph *Graph)
+{
+    if(UIIsValidDirectedGraph(Graph))
+    {
+        ui_graph_node *Node = UIGetGraphNodeFromHandle(Handle, Graph);
+        if(Node)
+        {
+            assert(Node != UIGetGraphNodeSentinel(Graph));
+
+            uint32_t       EdgeIndex = Node->FirstEdgeIndex;
+            ui_graph_edge *Edge      = UIGetGraphEdge(EdgeIndex, Graph);
+
+            while(Edge)
+            {
+                ui_graph_node *TargetNode = UIGetGraphNode(Edge->TargetNodeIndex, Graph);
+                if(TargetNode)
+                {
+                    assert(TargetNode->Degree > 0);
+                    TargetNode->Degree -= 1;
+                }
+
+                UIFreeGraphEdge(EdgeIndex, Graph);
+
+                EdgeIndex = Edge->NextEdgeIndex;
+                Edge      = UIGetGraphEdge(EdgeIndex, Graph);
+            }
+        }
+    }
+}
+
+
+static void
+UIAddGraphEdge(uint32_t Source, uint32_t Target, ui_directed_graph *Graph)
+{
+    if(UIIsValidDirectedGraph(Graph))
+    {
+        ui_graph_node *SourceNode = UIGetGraphNode(Source, Graph);
+        ui_graph_node *TargetNode = UIGetGraphNode(Target, Graph);
+        if(SourceNode && TargetNode)
+        {
+            uint32_t       EdgeIndex = UIPopFreeGraphEdge(Graph);
+            ui_graph_edge *Edge      = UIGetGraphEdge(EdgeIndex, Graph);
+            if(Edge)
+            {
+                Edge->TargetNodeIndex = Target;
+                Edge->NextEdgeIndex   = SourceNode->FirstEdgeIndex;
+
+                SourceNode->FirstEdgeIndex = EdgeIndex;
+                TargetNode->Degree        += 1;
+            }
+        }
+    }
 }
 
 
 typedef struct
 {
-    uint32_t BucketByteSize;
-} ui_layout_context_params;
+    uint32_t NodeCount;
+    uint32_t EdgeCount;
+} ui_directed_graph_params;
 
 
 static uint64_t
-UILayoutContextMemorySize(ui_layout_context_params Params)
+UIDirectedGraphMemorySize(ui_directed_graph_params Params)
 {
     ui_memory_size_counter Counter = {};
     {
-        UIMemorySizeCountStruct(ui_layout_context, &Counter);
-
-        for(uint32_t BucketIdx = 0; BucketIdx < UILayoutTaskBucket_Count; ++BucketIdx)
-        {
-            UIMemorySizeCountBuffer(uint8_t, Params.BucketByteSize, &Counter);
-        }
+        UIMemorySizeCountBuffer(ui_graph_node, Params.NodeCount, &Counter);
+        UIMemorySizeCountBuffer(ui_graph_edge, Params.EdgeCount, &Counter);
+        UIMemorySizeCountStruct(ui_directed_graph, &Counter);
     }
 
-    uint64_t Result = UIMemorySizeCounterWorstCase(UI_ALIGN_OF(ui_layout_context), Counter);
+    uint64_t Result = UIMemorySizeCounterWorstCase(UI_ALIGN_OF(ui_directed_graph), Counter);
     return Result;
 }
 
 
-static ui_layout_context *
-UILayoutContextMemoryInit(void *Memory, uint64_t Size, ui_layout_context_params Params)
+static ui_directed_graph *
+UIDirectedGraphMemoryInit(void *Memory, uint64_t Size, ui_directed_graph_params Params)
 {
-    ui_layout_context *Result = 0;
+    ui_directed_graph *Result = 0;
 
     ui_linear_allocator Allocator = UILinearAllocator(Memory, Size);
     if(UIIsValidLinearAllocator(&Allocator))
     {
-        ui_layout_context *Context = UIAllocateLinearStruct(ui_layout_context, &Allocator);
+        ui_graph_node     *Nodes = UIAllocateLinearArray(Params.NodeCount, ui_graph_node, &Allocator);
+        ui_graph_edge     *Edges = UIAllocateLinearArray(Params.EdgeCount, ui_graph_edge, &Allocator);
+        ui_directed_graph *Graph = UIAllocateLinearStruct(ui_directed_graph, &Allocator);
 
-        ui_linear_allocator Allocators[UILayoutTaskBucket_Count] = {};
-        for(uint32_t BucketIdx = 0; BucketIdx < UILayoutTaskBucket_Count; ++BucketIdx)
+        if(Graph)
         {
-            uint8_t *Buffer = (uint8_t *)UIAllocateLinearAligned(Params.BucketByteSize, UI_ALIGN_OF(uint8_t), &Allocator);
-            if(Buffer)
+            Graph->Nodes     = Nodes;
+            Graph->NodeCount = Params.NodeCount;
+            Graph->Edges     = Edges;
+            Graph->EdgeCount = Params.EdgeCount;
+
+            //
+            // Populate the edge free-list.
+            //
+
+            for(uint32_t EdgeIdx = 0; EdgeIdx < Params.EdgeCount; ++EdgeIdx)
             {
-                Allocators[BucketIdx] = UILinearAllocator(Buffer, Params.BucketByteSize); 
+                ui_graph_edge *Edge = UIGetGraphEdge(EdgeIdx, Graph);
+                assert(Edge);
+
+                if(EdgeIdx != (Params.EdgeCount - 1))
+                {
+                    Edge->TargetNodeIndex = 0;
+                    Edge->NextEdgeIndex   = EdgeIdx + 1;
+                }
+                else
+                {
+                    Edge->TargetNodeIndex = 0;
+                    Edge->NextEdgeIndex   = 0;
+                }
+            }
+
+            //
+            // Populate the node free-list.
+            //
+
+            assert(Params.EdgeCount >= Params.EdgeCount);
+
+            for(uint32_t NodeIdx = 0; NodeIdx < Params.NodeCount; ++NodeIdx)
+            {
+                ui_graph_node *Node = UIGetGraphNode(NodeIdx, Graph);
+                assert(Node);
+                Node->FirstEdgeIndex = 0;
+                Node->Degree         = 0;
+
+                if((NodeIdx + 1) < Params.NodeCount)
+                {
+                    UIAddGraphEdge(NodeIdx, NodeIdx + 1, Graph);
+                }
+                else
+                {
+                    //
+                    // TODO:
+                    // I think this might be a waste.
+                    //
+
+                    UIAddGraphEdge(NodeIdx, 0, Graph);
+                }
             }
         }
 
-        if(Context)
-        {
-            for(uint32_t BucketIdx = 0; BucketIdx < UILayoutTaskBucket_Count; ++BucketIdx)
-            {
-                Context->Buckets[BucketIdx].Pool = Allocators[BucketIdx];
-            }
-        }
-
-        Result = Context;
+        Result = Graph;
     }
 
     return Result;
+}
+
+
+typedef struct
+{
+    ui_directed_graph   *Graph;
+    uint32_t             WaveCount;
+    ui_graph_node_handle NextWaveHandles[16];
+    uint32_t             NextWaveCount;
+    bool                 IsValid;
+} ui_graph_iterator;
+
+
+static bool
+UIIsValidGraphIterator(const ui_graph_iterator *Iterator)
+{
+    bool Result = Iterator && Iterator->Graph;
+    return Result;
+}
+
+
+static ui_graph_iterator
+UIGraphIteratorBegin(ui_directed_graph *Graph)
+{
+    ui_graph_iterator Iterator =
+    {
+        .Graph         = Graph,
+        .WaveCount     = 0,
+        .NextWaveCount = 0,
+        .IsValid       = UIIsValidDirectedGraph(Graph),
+    };
+
+    return Iterator;
+}
+
+
+static bool
+UIGraphIteratorNextWave(ui_graph_iterator *Iterator)
+{
+    bool CanContinue = false;
+
+    if(Iterator && Iterator->IsValid)
+    {
+        ui_directed_graph *Graph = Iterator->Graph;
+
+        if(Iterator->WaveCount == 0)
+        {
+            //
+            // This is wrong, NodeCount is the total amount of nodes. If most nodes are unused, we're going to find
+            // a bunch of degree 0 nodes which are useless to us. The graph should track the amount of nodes that are used.
+            // But this problem is deeper, because there's simply no way to tell which are the valid nodes even if we know there
+            // are 10 nodes, we don't know where they are stored. This also checks the sentinel. There are obvious solutions, but
+            // they're not pretty. Uhm, this should be simple... Are we fine with the iterator having internal knowledge of the 
+            // graph structure?
+            //
+
+            for(uint32_t NodeIdx = 0; NodeIdx < Graph->NodeCount; ++NodeIdx)
+            {
+            }
+        }
+        else
+        {
+            for(uint32_t WaveIdx = 0; WaveIdx < Iterator->NextWaveCount; ++WaveIdx)
+            {
+                //
+                // Right... But the problem with that is that I simply don't know which nodes have hit the zero degree.
+                // So I still have to do it manually :) Uhm. Weirdly linked to the first issue we have in this function
+                // where it's hard to know which nodes are 0 degree/find them. I'd have to write the same code.
+                // I think the iterator should be part of the graph API. With that being said...
+                //
+
+                ui_graph_node_handle NodeHandle = Iterator->NextWaveHandles[WaveIdx];
+                ui_graph_node       *Node       = UIGetGraphNodeFromHandle(NodeHandle, Graph);
+
+                if(Node)
+                {
+                    UIRemoveGraphNode(NodeHandle, Graph);
+                }
+            }
+        }
+
+        CanContinue = Iterator->IsValid;
+    }
+
+    return CanContinue;
 }
 
 
@@ -650,14 +1127,12 @@ UILayoutContextMemoryInit(void *Memory, uint64_t Size, ui_layout_context_params 
 typedef struct
 {
     ui_linear_allocator FrameAllocator;
-    ui_layout_context  *LayoutContext;
 } ui_window;
 
 
 typedef struct
 {
-    uint64_t                 FrameMemorySize;
-    ui_layout_context_params LayoutContext;
+    uint64_t FrameMemorySize;
 } ui_window_params;
 
 
@@ -666,11 +1141,6 @@ UIWindowMemorySize(ui_window_params Params)
 {
     ui_memory_size_counter Counter = {};
     {
-        uint64_t LayoutContextSize = UILayoutContextMemorySize(Params.LayoutContext);
-        {
-            UIMemorySizeCountBuffer(uint8_t, LayoutContextSize, &Counter);
-        }
-
         UIMemorySizeCountBuffer(uint8_t, Params.FrameMemorySize, &Counter);
         UIMemorySizeCountStruct(ui_window, &Counter);
     }
@@ -688,22 +1158,38 @@ UIWindowMemoryInit(void *Memory, uint64_t Size, ui_window_params Params)
     ui_linear_allocator Allocator = UILinearAllocator(Memory, Size);
     if(UIIsValidLinearAllocator(&Allocator))
     {
-        uint64_t LayoutContextSize = UILayoutContextMemorySize(Params.LayoutContext);
-
-        uint8_t   *LayoutContextMemory = UIAllocateLinearArray(LayoutContextSize, uint8_t, &Allocator);
         uint8_t   *FrameMemory         = UIAllocateLinearArray(Params.FrameMemorySize, uint8_t, &Allocator);
         ui_window *Window              = UIAllocateLinearStruct(ui_window, &Allocator);
 
         if(Window)
         {
             Window->FrameAllocator = UILinearAllocator(FrameMemory, Params.FrameMemorySize);
-            Window->LayoutContext  = UILayoutContextMemoryInit(LayoutContextMemory, LayoutContextSize, Params.LayoutContext);
         }
 
         Result = Window;
     }
 
     return Result;
+}
+
+
+static void
+UIExecuteWindow(ui_window *Window)
+{
+    if(Window)
+    {
+        //
+        // Unsure what this would do really. Probably return some sort of draw commands for the caller.
+        // We still need to fully execute the layout context. Caching/Building/Computing or whatever.
+        // We don't really want to do this here. But _something_ has to do it and I wonder if we just cram everything
+        // in the layout context. Does that make any sort of sense? Maybe? Why not? It doesn't have to own the output, does it?
+        // It doesn't know how to crystalize. There's weird parallelism between contexts. Uhm... If we let the context execute...
+        // Well, one thing is certain: We want some sort of mapping between stuff, wheter it's animations, style, layout, there's still
+        // this concept of a "thing" (should probably find a name for that...) which I think the window should handle. So the other systems
+        // style/layout/animations should allow the user to record a key alongisde their data. Something like that? We can try it. Key is a simple
+        // number I think, fully opaque. Wrap it in a type so it's user overridable.
+        //
+    }
 }
 
 
@@ -829,74 +1315,53 @@ UIPushVerticalContent(ui_vertical_layout *Layout)
 static void
 UILeaveVerticalLayout(const ui_vertical_layout *Layout, ui_window *Window)
 {
-    //
-    // TODO:
-    // 1) input validation
-    // 2) reduce code dup
-    //
+    ui_directed_graph *Graph = 0;
 
-    if(Layout && Window)
+    if(Layout->SizingX.Type == UISizing_Fixed)
     {
-        //
-        // Container
-        //
-
-        if(Layout->SizingX.Type == UISizing_Fixed)
-        {
-            ui_fixed_sizing_task *Task = UIAcquireFixedLayoutTask(UIAxis_X, Window->LayoutContext);
-            if(Task)
-            {
-                Task->Size    = Layout->SizingX.Fixed;
-                Task->MinSize = Layout->MinSize.X;
-                Task->MaxSize = Layout->MaxSize.X;
-            }
-        }
-
-        if(Layout->SizingY.Type == UISizing_Fixed)
-        {
-            ui_fixed_sizing_task *Task = UIAcquireFixedLayoutTask(UIAxis_Y, Window->LayoutContext);
-            if(Task)
-            {
-                Task->Size    = Layout->SizingY.Fixed;
-                Task->MinSize = Layout->MinSize.Y;
-                Task->MaxSize = Layout->MaxSize.Y;
-            }
-        }
-
-        //
-        // Content
-        //
-
         for(ui_vertical_content_node *Node = Layout->FstContent; Node != 0; Node = Node->Next)
         {
             ui_vertical_content *Content = &Node->Content;
 
             if(Content->SizingX.Type == UISizing_Fixed)
             {
-                ui_fixed_sizing_task *Task = UIAcquireFixedLayoutTask(UIAxis_X, Window->LayoutContext);
-                if(Task)
-                {
-                    Task->Size    = Content->SizingX.Fixed;
-                    Task->MinSize = Content->Min.X;
-                    Task->MaxSize = Content->Max.X;
-                }
+                //
+                // Layout
+                // x) Allocate Command
+                // x) Fill Command
+                // x) Allocate Node
+                // x) Set Edge(s)
+                //
+
             }
-    
-            if(Content->SizingY.Type == UISizing_Fixed)
+            else if(Content->SizingX.Type == UISizing_Percent)
             {
-                ui_fixed_sizing_task *Task = UIAcquireFixedLayoutTask(UIAxis_Y, Window->LayoutContext);
-                if(Task)
-                {
-                    Task->Size    = Content->SizingY.Fixed;
-                    Task->MinSize = Content->Min.Y;
-                    Task->MaxSize = Content->Max.Y;
-                }
+                //
+                // Layout
+                // x) Allocate Command
+                // x) Fill Command
+                // x) Allocate Node
+                // x) Set Edge(s)
+                //
+                // Problem:
+                // The percent-size command relies on the natural output of the parent.
+                // Find a way to fill the command data, the percent command needs a reference to the parents natural size output, and how does
+                // that fit into the execution context is quite unclear.
+                //
+                // Execution Context:
+                // We iterate the graph in some way, which tells us which command to execute. It's always a command right, I mean it's technically
+                // opaque... but, it's a dependency graph so like. I guess it could be used for other things now that I think about it. Anyways,
+                // in our case, we would use one for the layout in the window context. The context then... Let's say we stick with the command
+                // allocator idea. Allocate a command, this gives us an offset, map a node to that offset, as we iterate the graph we get offsets
+                // back into commands, read them, execute them. The problem with this are the delayed commands. When commands depend on the output
+                // from a previous commands. For example, the % case, the command needs to know what the parent's natural size was. Either, the %
+                // command has a reference to the parent's natural size output or the parent's natural size writes into the % command once done.
+                //
+            }
+            else if(Content->SizingX.Type == UISizing_Fit)
+            {
             }
         }
-
-        //
-        // Place
-        //
     }
 }
 
