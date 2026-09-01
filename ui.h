@@ -13,21 +13,6 @@
 
 
 // ==========================================================
-// [SECTION] BIT TABLE
-// ==========================================================
-// [DESCRIPTION]
-// ==========================================================
-
-
-typedef struct ui_bit_table ui_bit_table;
-
-
-typedef struct
-{
-    uint32_t EntryCount;
-} ui_bit_table_params;
-
-// ==========================================================
 // [SECTION] DIRECTED GRAPH
 // ==========================================================
 // [DESCRIPTION]
@@ -79,8 +64,9 @@ typedef struct ui_directed_graph ui_directed_graph;
 # define UI_MIB(X) ((UI_KIB(X) * 1024))
 # define UI_GIB(X) ((UI_MIB(X) * 1024))
 
-# define UI_MIN(A, B) ((A <= B) ? A : B)
-# define UI_MAX(A, B) ((A >= B) ? A : B)
+# define UI_MIN(A, B)              ((A <= B) ? A : B)
+# define UI_MAX(A, B)              ((A >= B) ? A : B)
+# define UI_CLAMP(Value, Min, Max) (UI_MIN(UI_MAX(Value, Min), Max))
 
 # define UI_IS_VALID_ENUM(Value, MaxExclusive) ((Value >= 0) && (Value < MaxExclusive))
 # define UI_ARRAY_COUNT(Array)                 ((sizeof(Array) / sizeof(Array[0])))
@@ -93,17 +79,6 @@ typedef struct ui_directed_graph ui_directed_graph;
 // ==========================================================
 // [SECTION] : ...
 // ==========================================================
-
-
-typedef enum
-{
-    UIAlignment_Start        = 0,
-    UIAlignment_Center       = 1,
-    UIAlignment_End          = 2,
-    UIAlignment_SpaceBetween = 3,
-    UIAlignment_SpaceAround  = 4,
-    UIAlignment_SpaceEvenly  = 5,
-} UIAlignment;
 
 
 typedef enum
@@ -306,338 +281,198 @@ UIMemorySizeCounterWorstCase(uint32_t Align, ui_memory_size_counter Counter)
 // ==========================================================
 
 
+typedef enum
+{
+    UIJustify_Start        = 0,
+    UIJustify_Center       = 1,
+    UIJustify_End          = 2,
+    UIJustify_SpaceBetween = 3,
+    UIJustify_SpaceAround  = 4,
+    UIJustify_SpaceEvenly  = 5,
+} UIJustify;
+
+
+typedef enum
+{
+    UIAlignment_Start  = 0,
+    UIAlignment_Center = 1,
+    UIAlignment_End    = 2,
+} UIAlignment;
+
+
 typedef struct
 {
-    float Size;
-    float MinSize;
-    float MaxSize;
-} ui_fixed_sizing_task;
+    float VisualSize;
+    float ContentSize;
+} ui_axis_box;
 
 
 static float
-UILayoutComputeFixedSizing(float Size, float MinSize, float MaxSize)
+UISizeFixedAxis(float FixedValue, float MinConstraint, float MaxConstraint)
 {
     float Result = 0.0f;
 
-    float Min = UI_MAX(MinSize, 0.0f);
-    float Max = UI_MAX(MaxSize, 0.0f);
-    if(MinSize <= MaxSize)
+    if(MinConstraint > MaxConstraint)
     {
-        Result = UI_MIN(UI_MAX(Size, MinSize), MaxSize);
+        Result = UI_CLAMP(FixedValue, MinConstraint, MinConstraint);
     }
     else
     {
-        Result = 0.0f;
+        Result = UI_CLAMP(FixedValue, MinConstraint, MaxConstraint);
     }
 
     return Result;
 }
 
 
-typedef struct
+static ui_axis_box
+UISizeAxisBox(float SelfSize, float PaddingA, float PaddingB, float BorderWidth, float BorderInset)
 {
-    float       ParentSize;
-    ui_padding  Padding;
-    float       Spacing;
-    UIAlignment Alignment;
-    float      *ChildSize;
-    uint32_t    ChildCount;
-} ui_place_major_axis_task;
+    //
+    // The BorderInset value specicies how much of the border is inside the element visually.
+    // For example, a border inset of 0.0f means the border is full outside the element and a border
+    // inset of 1.0f means the border is fully inside the element.
+    //
 
+    float ClampedBorderInset = UI_CLAMP(BorderInset, 0.0f, 1.0f);
+    float BorderConsumed     = BorderWidth * BorderInset;
+    float BorderExtended     = BorderWidth * (1.0f - BorderInset);
 
-static void
-UILayoutPlaceMajorAxis(const ui_place_major_axis_task *Tasks, uint32_t Count, float *OutPosition)
-{
-    uint32_t OutputOffset = 0;
-    for(uint32_t TaskIdx = 0; TaskIdx < Count; ++TaskIdx)
+    //
+    // Visual Size:
+    // The size that will most likely be rendered. The placer often uses this size when placing elements.
+    // Though it should be possible to override that behavior and use the self size instead which may lead to
+    // overlapping visual elements.
+    //
+    // Content Size:
+    // The size that is allowed by the parent for children to be placed inside of it.
+    //
+
+    ui_axis_box Result =
     {
-        const ui_place_major_axis_task *Task = Tasks + TaskIdx;
-
-        //
-        // Compute the total space occupied by the children logically.
-        //
-        // NOTE:
-        // Something like that is slightly more complex, because we might have to account for some other data:
-        // 1) Border-Width (in some cases the border width may affect the layout depending on what the user decides)
-        // 2) Margin (spacing around the child as I understand it)
-        //
-
-        float ChildrenSize = 0.0f;
-        for(uint32_t ChildIdx = 0; ChildIdx < Task->ChildCount; ++ChildIdx)
-        {
-            ChildrenSize += Task->ChildSize[ChildIdx];
-        }
-
-        //
-        // Compute the alignment offset for the cursor:
-        // 1) Where the cursor should start placing.
-        // 2) How the cursor should change after placing a child.
-        //
-        // NOTE:
-        // 1) Are there other cases we need to handle or is this sufficient?
-        //
-        // TODO:
-        // 1) Probably made a bunch of mistakes/missed edge cases in the actual value.
-        // 2) We are not accounting for the padding (both space and cursor offset)
-        //
-
-        float ParentSpace = Task->ParentSize;
-        if(Task->ChildCount > 1)
-        {
-            ParentSpace = Task->ParentSize - (ChildrenSize + ((Task->ChildCount - 1) * Task->Spacing));
-        }
-
-        float StartOffset = 0.0f;
-        float PlaceOffset = 0.0f;
-        if(ParentSpace > 0.0f)
-        {
-            switch(Task->Alignment)
-            {
-    
-            case UIAlignment_Center:
-            {
-                StartOffset = ParentSpace * 0.5f;
-                PlaceOffset = 0.0f;
-            } break;
-     
-            case UIAlignment_End:
-            {
-                StartOffset = ParentSpace - ChildrenSize;
-                PlaceOffset = 0.0f;
-            } break;
-
-            case UIAlignment_SpaceBetween:
-            {
-                StartOffset = 0.0f;
-                PlaceOffset = Task->ChildCount > 1 ? (ParentSpace / (Task->ChildCount - 1)) : 0.0f;
-            } break;
-
-            case UIAlignment_SpaceAround:
-            {
-                StartOffset = Task->ChildCount > 1 ? (ParentSpace / (Task->ChildCount * 2)) : 0.0f;
-                PlaceOffset = StartOffset * 2.0f;
-            } break;
-
-            case UIAlignment_SpaceEvenly:
-            {
-                StartOffset = (ParentSpace / (Task->ChildCount + 1));
-                PlaceOffset = StartOffset;
-            } break;
-
-            default: break;
-     
-            }
-        }
-        else
-        {
-            //
-            // TODO:
-            // I don't really know how to handle the overflow case. I think it might just be a completely different
-            // placing branch. We need a 2D cursor in that case... Well, this case would be the content overflows, but
-            // the content isn't allowed to. It would depend on some kind of policy.
-            //
-        }
-
-        //
-        // Write the resulting positions in the output buffer.
-        //
-
-        float Cursor = StartOffset;
-        for(uint32_t ChildIdx = 0; ChildIdx < Task->ChildCount; ++ChildIdx)
-        {
-            OutPosition[ChildIdx + OutputOffset] = Cursor;
-            Cursor                              += PlaceOffset;
-        }
-
-        OutputOffset += Task->ChildCount;
-    }
-}
-
-
-typedef struct
-{
-    float       ParentSize;
-    ui_padding  Padding;
-    UIAlignment Alignment;
-    float      *ChildSizes;
-    uint32_t    ChildCount;
-} ui_place_minor_axis_task;
-
-
-static void
-UILayoutPlaceMinorAxis(const ui_place_minor_axis_task *Tasks, uint32_t Count, float *OutPosition)
-{
-    uint32_t TotalChildCount = 0;
-
-    for(uint32_t TaskIdx = 0; TaskIdx < Count; ++TaskIdx)
-    {
-        const ui_place_minor_axis_task *Task = Tasks + TaskIdx;
-
-        for(uint32_t ChildIdx = 0; ChildIdx < Task->ChildCount; ++ChildIdx)
-        {
-            //
-            // Compute the available content space for the parent.
-            //
-            // TODO:
-            // x) Does not handle padding
-            // x) Does not handle border-width
-            //
-
-            float ChildSize   = Task->ChildSizes[ChildIdx];
-            float ParentSpace = Task->ParentSize - ChildSize;
-
-            //
-            // Compute the child's relative offset position.
-            //
-            // NOTE:
-            // Do we always want to compute the relative position or do we accept the parent's absolute position
-            // in parameter? Both are somewhat equivalent as I understand it.
-            //
-            // TODO:
-            // The position result does not account for the parent's padding.
-            //
-            
-            float Offset = 0.0f;
-            switch(Task->Alignment)
-            {
-
-            case UIAlignment_Start:        break;
-            case UIAlignment_SpaceAround:  break;
-            case UIAlignment_SpaceBetween: break;
-            case UIAlignment_SpaceEvenly:  break;
-
-            case UIAlignment_Center: Offset = (ParentSpace * 0.5f); break;
-            case UIAlignment_End:    Offset = (ParentSpace - ChildSize);
-
-            }
-
-            //
-            // Write the output.
-            //
-            // NOTE:
-            // Still unclear if we really want relative positions.
-            //
-
-            OutPosition[TotalChildCount + ChildIdx] = Offset;
-            TotalChildCount                        += 1;
-        }
-    }
-}
-
-
-// ==========================================================
-// [SECTION] BITSET
-// ==========================================================
-// [HISTORY]
-// ==========================================================
-// [TODO]
-// - Test
-// - Write the API
-// - Write the init code
-// ==========================================================
-
-
-struct ui_bit_table
-{
-    uint64_t *Chunks;
-    uint32_t  ChunkCount;
-    uint32_t  EntryCount;
-    uint32_t  BitPerChunk;
-};
-
-
-typedef struct
-{
-    uint64_t *Chunk;
-    uint64_t  BitMask;
-    bool      IsValid;
-} ui_bit_table_entry;
-
-
-static bool
-UIIsValidBitTable(const ui_bit_table *BitTable)
-{
-    bool Result = BitTable && BitTable->Chunks;
-    return Result;
-}
-
-
-static ui_bit_table
-UIBitTable(uint64_t *Chunks, uint32_t ChunkCount)
-{
-    ui_bit_table Result =
-    {
+        .VisualSize  = SelfSize + (BorderExtended * 2.0f),
+        .ContentSize = SelfSize - ((BorderConsumed * 2.0f) + (PaddingA + PaddingB)),
     };
 
     return Result;
 }
 
 
-static ui_bit_table_entry
-UIBitTableGetEntry(uint32_t Index, const ui_bit_table *BitTable)
-{
-    assert(UIIsValidBitTable(BitTable));
-
-    ui_bit_table_entry Result = {};
-
-    if(Index < BitTable->EntryCount)
-    {
-        assert(UI_IS_POWER_OF_TWO(BitTable->BitPerChunk));
-
-        uint32_t ChunkIndex = Index / BitTable->BitPerChunk;
-        uint32_t BitIndex   = Index % BitTable->BitPerChunk;
-
-        assert(ChunkIndex < BitTable->ChunkCount);
-
-        Result.Chunk   = BitTable->Chunks + ChunkIndex;
-        Result.BitMask = (1ULL << BitIndex);
-        Result.IsValid = true;
-    }
-
-    return Result;
-}
-
-
 static void
-UIBitTableSet(uint32_t Index, ui_bit_table *BitTable)
+UIPlaceMajorAxis(float ContentSize, float *ChildSize, uint32_t ChildCount, float Spacing, float Padding, float BorderWidth, float BorderInset, UIJustify Justify, float *Result)
 {
-    if(UIIsValidBitTable(BitTable))
+    //
+    // TODO:
+    // This is probably missing a bunch of safety clamps/checks
+    // This has not been tested.
+    //
+
+    if(ChildCount > 0)
     {
-        ui_bit_table_entry Entry = UIBitTableGetEntry(Index, BitTable);
-        if(Entry.IsValid)
+        float ChildrenSize = 0.0f;
+        for(uint32_t ChildIdx = 0; ChildIdx < ChildCount; ++ChildIdx)
         {
-            *Entry.Chunk |= Entry.BitMask;
+            ChildrenSize += ChildSize[ChildIdx];
+        }
+
+        float RemainingContent = ContentSize - ChildrenSize;
+        if(RemainingContent > 0.0f)
+        {
+            float SpacingConsumed = Spacing * (ChildCount - 1);
+
+            //
+            // CursorStart represents the initial offset applied to the relative position.
+            // CursorStep reprensets the step we need to take after laying out each element,
+            // this step does not include the child's own size.
+            //
+
+            float CursorStart = 0.0f;
+            float CursorStep  = 0.0f;
+            switch(Justify)
+            {
+
+            case UIJustify_Start:
+            {
+                CursorStart = 0.0f;
+                CursorStep  = Spacing;
+            } break;
+
+            case UIJustify_Center:
+            {
+                CursorStart = (RemainingContent - SpacingConsumed) * 0.5f;
+                CursorStep  = Spacing;
+            } break;
+
+            case UIJustify_End:
+            {
+                CursorStart = (RemainingContent - SpacingConsumed);
+                CursorStep  = Spacing;
+            } break;
+
+            case UIJustify_SpaceBetween:
+            {
+                CursorStart = 0.0f;
+                CursorStep  = ChildCount > 1 ? (RemainingContent / (ChildCount - 1)) : 0.0f;
+            } break;
+
+            case UIJustify_SpaceAround:
+            {
+                CursorStart = (RemainingContent / (ChildCount * 2));
+                CursorStep  = CursorStart * 2.0f;
+            } break;
+
+            case UIJustify_SpaceEvenly:
+            {
+                CursorStart = (RemainingContent / (ChildCount + 1));
+                CursorStep  =  CursorStart;
+            } break;
+
+            }
+
+            //
+            // Since this functions returns positions relative to the parent's top-left position (which is considered to be (0, 0),
+            // we need to apply an offset to each position: Padding (From where we start laying out element: A or B when reversed)
+            // and the border-width along with the border inset since the border may or may not affect the position.
+            //
+
+            float ClampedBorderInset = UI_CLAMP(BorderInset, 0.0f, 1.0f);
+            float CursorOffset       = Padding + (BorderWidth * ClampedBorderInset);
+            float CursorPosition     = CursorStart;
+            for(uint32_t ChildIdx = 0; ChildIdx < ChildCount; ++ChildIdx)
+            {
+                Result[ChildIdx] = CursorPosition + CursorOffset;
+                CursorPosition  += ChildSize[ChildIdx] + CursorStep;
+            }
         }
     }
 }
 
 
-static void
-UIBitTableClear(uint32_t Index, ui_bit_table *BitTable)
+static float
+UIPlaceMinorAxis(float ContentSize, float ChildSize, float Padding, float BorderWidth, float BorderInset, UIAlignment Alignment)
 {
-    if(UIIsValidBitTable(BitTable))
+    float Result = 0.0f;
+
+    float RemainingContent = ContentSize - ChildSize;
+    if(RemainingContent > 0.0f)
     {
-        ui_bit_table_entry Entry = UIBitTableGetEntry(Index, BitTable);
-        if(Entry.IsValid)
+        switch(Alignment)
         {
-            *Entry.Chunk &= ~Entry.BitMask;
+
+        case UIAlignment_Start:  Result = 0.0f;                    break;
+        case UIAlignment_Center: Result = RemainingContent * 0.5f; break;
+        case UIAlignment_End:    Result = RemainingContent;        break;
+
         }
     }
-}
-
-
-static bool
-UIBitTableCheck(uint32_t Index, const ui_bit_table *BitTable)
-{
-    bool Result = false;
-
-    if(UIIsValidBitTable(BitTable))
+    else
     {
-        ui_bit_table_entry Entry = UIBitTableGetEntry(Index, BitTable);
-        if(Entry.IsValid)
-        {
-            Result = *Entry.Chunk & Entry.BitMask;
-        }
+        //
+        // TODO:
+        // Uhm.. Unsure how to handle the overflow case.
+        //
+
+        assert(false);
     }
 
     return Result;
@@ -858,10 +693,11 @@ UIPopFreeGraphNode(ui_directed_graph *Graph)
 }
 
 
-static uint32_t
+static ui_graph_node_handle
 UIAddGraphNode(ui_directed_graph *Graph)
 {
-    uint32_t Result = 0;
+    ui_graph_node_handle Result = {};
+
     if(UIIsValidDirectedGraph(Graph))
     {
         uint32_t       NodeIndex = UIPopFreeGraphNode(Graph);
@@ -873,42 +709,10 @@ UIAddGraphNode(ui_directed_graph *Graph)
             Node->FirstEdgeIndex = 0;
         }
 
-        Result = NodeIndex;
+        Result = UIGraphNodeHandleFromIndex(NodeIndex);
     }
 
     return Result;
-}
-
-
-static void
-UIRemoveGraphNode(ui_graph_node_handle Handle, ui_directed_graph *Graph)
-{
-    if(UIIsValidDirectedGraph(Graph))
-    {
-        ui_graph_node *Node = UIGetGraphNodeFromHandle(Handle, Graph);
-        if(Node)
-        {
-            assert(Node != UIGetGraphNodeSentinel(Graph));
-
-            uint32_t       EdgeIndex = Node->FirstEdgeIndex;
-            ui_graph_edge *Edge      = UIGetGraphEdge(EdgeIndex, Graph);
-
-            while(Edge)
-            {
-                ui_graph_node *TargetNode = UIGetGraphNode(Edge->TargetNodeIndex, Graph);
-                if(TargetNode)
-                {
-                    assert(TargetNode->Degree > 0);
-                    TargetNode->Degree -= 1;
-                }
-
-                UIFreeGraphEdge(EdgeIndex, Graph);
-
-                EdgeIndex = Edge->NextEdgeIndex;
-                Edge      = UIGetGraphEdge(EdgeIndex, Graph);
-            }
-        }
-    }
 }
 
 
@@ -923,6 +727,7 @@ UIAddGraphEdge(uint32_t Source, uint32_t Target, ui_directed_graph *Graph)
         {
             uint32_t       EdgeIndex = UIPopFreeGraphEdge(Graph);
             ui_graph_edge *Edge      = UIGetGraphEdge(EdgeIndex, Graph);
+
             if(Edge)
             {
                 Edge->TargetNodeIndex = Target;
@@ -933,6 +738,13 @@ UIAddGraphEdge(uint32_t Source, uint32_t Target, ui_directed_graph *Graph)
             }
         }
     }
+}
+
+
+static void
+UIAddGraphEdgeFromHandle(ui_graph_node_handle Source, ui_graph_node_handle Target, ui_directed_graph *Graph)
+{
+    UIAddGraphEdge(Source.ID, Target.ID, Graph);
 }
 
 
@@ -950,6 +762,7 @@ UIDirectedGraphMemorySize(ui_directed_graph_params Params)
     {
         UIMemorySizeCountBuffer(ui_graph_node, Params.NodeCount, &Counter);
         UIMemorySizeCountBuffer(ui_graph_edge, Params.EdgeCount, &Counter);
+
         UIMemorySizeCountStruct(ui_directed_graph, &Counter);
     }
 
@@ -966,10 +779,10 @@ UIDirectedGraphMemoryInit(void *Memory, uint64_t Size, ui_directed_graph_params 
     ui_linear_allocator Allocator = UILinearAllocator(Memory, Size);
     if(UIIsValidLinearAllocator(&Allocator))
     {
-        ui_graph_node     *Nodes = UIAllocateLinearArray(Params.NodeCount, ui_graph_node, &Allocator);
-        ui_graph_edge     *Edges = UIAllocateLinearArray(Params.EdgeCount, ui_graph_edge, &Allocator);
-        ui_directed_graph *Graph = UIAllocateLinearStruct(ui_directed_graph, &Allocator);
+        ui_graph_node *Nodes = UIAllocateLinearArray(Params.NodeCount, ui_graph_node, &Allocator);
+        ui_graph_edge *Edges = UIAllocateLinearArray(Params.EdgeCount, ui_graph_edge, &Allocator);
 
+        ui_directed_graph *Graph = UIAllocateLinearStruct(ui_directed_graph, &Allocator);
         if(Graph)
         {
             Graph->Nodes     = Nodes;
@@ -1004,13 +817,15 @@ UIDirectedGraphMemoryInit(void *Memory, uint64_t Size, ui_directed_graph_params 
 
             assert(Params.EdgeCount >= Params.EdgeCount);
 
-            for(uint32_t NodeIdx = 0; NodeIdx < Params.NodeCount; ++NodeIdx)
+            for (uint32_t NodeIdx = 0; NodeIdx < Params.NodeCount; ++NodeIdx)
             {
                 ui_graph_node *Node = UIGetGraphNode(NodeIdx, Graph);
-                assert(Node);
                 Node->FirstEdgeIndex = 0;
                 Node->Degree         = 0;
+            }
 
+            for(uint32_t NodeIdx = 0; NodeIdx < Params.NodeCount; ++NodeIdx)
+            {
                 if((NodeIdx + 1) < Params.NodeCount)
                 {
                     UIAddGraphEdge(NodeIdx, NodeIdx + 1, Graph);
@@ -1036,83 +851,160 @@ UIDirectedGraphMemoryInit(void *Memory, uint64_t Size, ui_directed_graph_params 
 
 typedef struct
 {
-    ui_directed_graph   *Graph;
-    uint32_t             WaveCount;
-    ui_graph_node_handle NextWaveHandles[16];
-    uint32_t             NextWaveCount;
-    bool                 IsValid;
+    uint32_t Indices[32];
+    uint32_t HeadIndex;
+    uint32_t TailIndex;
+} ui_graph_iterator_worker;
+
+
+typedef struct
+{
+    const ui_directed_graph *Graph;
+    uint32_t                *NodeDegree;
+    uint32_t                 NodeCount;
+    ui_graph_iterator_worker Worker;
 } ui_graph_iterator;
 
 
-static bool
-UIIsValidGraphIterator(const ui_graph_iterator *Iterator)
+static uint32_t
+UIGraphIteratorNextIndex(uint32_t CurrentIndex, const ui_graph_iterator_worker *Worker)
 {
-    bool Result = Iterator && Iterator->Graph;
+    uint32_t Result = (CurrentIndex + 1) % UI_ARRAY_COUNT(Worker->Indices);
+    return Result;
+}
+
+
+static uint32_t
+UIGraphIteratorPrevIndex(uint32_t CurrentIndex, const ui_graph_iterator_worker *Worker)
+{
+    uint32_t Result = (CurrentIndex - 1) % UI_ARRAY_COUNT(Worker->Indices);
+    return Result;
+}
+
+
+static void
+UIPushNodeInIterator(uint32_t Index, ui_graph_iterator_worker *Worker)
+{
+    if(Worker)
+    {
+        uint32_t NextHeadIndex = UIGraphIteratorNextIndex(Worker->HeadIndex, Worker);
+        if(NextHeadIndex != Worker->TailIndex)
+        {
+            Worker->Indices[Worker->HeadIndex] = Index; 
+            Worker->HeadIndex                  = NextHeadIndex;
+        }
+    }
+}
+
+
+static uint32_t
+UIPopNextNodeFromIterator(ui_graph_iterator_worker *Worker)
+{
+    uint32_t Result = 0;
+
+    if(Worker)
+    {
+        if(Worker->HeadIndex != Worker->TailIndex)
+        {
+            uint32_t PrevIndex = UIGraphIteratorPrevIndex(Worker->HeadIndex, Worker);
+
+            Result            = Worker->Indices[PrevIndex];
+            Worker->HeadIndex = PrevIndex;
+        }
+    }
+
+    return Result;
+}
+
+
+static uint32_t
+UIPopLastNodeFromIterator(ui_graph_iterator_worker *Worker)
+{
+    uint32_t Result = {};
+
+    if(Worker)
+    {
+        if(Worker->TailIndex != Worker->HeadIndex)
+        {
+            Result            = Worker->Indices[Worker->TailIndex];
+            Worker->TailIndex = UIGraphIteratorNextIndex(Worker->TailIndex, Worker);
+        }
+    }
+
     return Result;
 }
 
 
 static ui_graph_iterator
-UIGraphIteratorBegin(ui_directed_graph *Graph)
+UIBeginGraphIterator(const ui_directed_graph *Graph, ui_linear_allocator *Allocator)
 {
-    ui_graph_iterator Iterator =
-    {
-        .Graph         = Graph,
-        .WaveCount     = 0,
-        .NextWaveCount = 0,
-        .IsValid       = UIIsValidDirectedGraph(Graph),
-    };
+    ui_graph_iterator Result = {};
 
-    return Iterator;
+    if(UIIsValidDirectedGraph(Graph) && UIIsValidLinearAllocator(Allocator))
+    {
+        ui_graph_iterator Iterator =
+        {
+            .Graph      = Graph,
+            .NodeDegree = UIAllocateLinearArray(Graph->NodeCount, uint32_t, Allocator),
+            .NodeCount  = Graph->NodeCount,
+        };
+
+        for(uint32_t NodeIdx = 1; NodeIdx < Graph->NodeCount; ++NodeIdx)
+        {
+            ui_graph_node *Node = UIGetGraphNode(NodeIdx, Graph);
+            assert(Node);
+
+            if(Node->Degree == 0)
+            {
+                UIPushNodeInIterator(NodeIdx, &Iterator.Worker);
+            }
+            else
+            {
+                Iterator.NodeDegree[NodeIdx] = Node->Degree;
+            }
+        }
+
+        Result = Iterator;
+    }
+
+    return Result;
 }
 
 
 static bool
-UIGraphIteratorNextWave(ui_graph_iterator *Iterator)
+UIGraphIteratorNext(ui_graph_iterator *Iterator, ui_graph_node_handle *Result)
 {
     bool CanContinue = false;
 
-    if(Iterator && Iterator->IsValid)
+    const ui_directed_graph  *LayoutGraph = Iterator->Graph;
+    ui_graph_iterator_worker *Worker      = &Iterator->Worker;
+
+    uint32_t             NodeIndex = UIPopNextNodeFromIterator(Worker);
+    const ui_graph_node *Node      = UIGetGraphNode(NodeIndex, LayoutGraph);
+    if (Node && Node != UIGetGraphNodeSentinel(LayoutGraph))
     {
-        ui_directed_graph *Graph = Iterator->Graph;
-
-        if(Iterator->WaveCount == 0)
+        uint32_t       EdgeIndex = Node->FirstEdgeIndex;
+        ui_graph_edge *Edge      = UIGetGraphEdge(EdgeIndex, LayoutGraph);
+        while(Edge && Edge != UIGetGraphEdgeSentinel(LayoutGraph))
         {
-            //
-            // This is wrong, NodeCount is the total amount of nodes. If most nodes are unused, we're going to find
-            // a bunch of degree 0 nodes which are useless to us. The graph should track the amount of nodes that are used.
-            // But this problem is deeper, because there's simply no way to tell which are the valid nodes even if we know there
-            // are 10 nodes, we don't know where they are stored. This also checks the sentinel. There are obvious solutions, but
-            // they're not pretty. Uhm, this should be simple... Are we fine with the iterator having internal knowledge of the 
-            // graph structure?
-            //
+            uint32_t TargetIndex   = Edge->TargetNodeIndex;
+            uint32_t CurrentDegree = Iterator->NodeDegree[TargetIndex];
+            assert(CurrentDegree > 0);
 
-            for(uint32_t NodeIdx = 0; NodeIdx < Graph->NodeCount; ++NodeIdx)
+            CurrentDegree -= 1;
+            if (CurrentDegree == 0)
             {
+                UIPushNodeInIterator(TargetIndex, Worker);
             }
-        }
-        else
-        {
-            for(uint32_t WaveIdx = 0; WaveIdx < Iterator->NextWaveCount; ++WaveIdx)
-            {
-                //
-                // Right... But the problem with that is that I simply don't know which nodes have hit the zero degree.
-                // So I still have to do it manually :) Uhm. Weirdly linked to the first issue we have in this function
-                // where it's hard to know which nodes are 0 degree/find them. I'd have to write the same code.
-                // I think the iterator should be part of the graph API. With that being said...
-                //
 
-                ui_graph_node_handle NodeHandle = Iterator->NextWaveHandles[WaveIdx];
-                ui_graph_node       *Node       = UIGetGraphNodeFromHandle(NodeHandle, Graph);
+            Iterator->NodeDegree[TargetIndex] = CurrentDegree;
 
-                if(Node)
-                {
-                    UIRemoveGraphNode(NodeHandle, Graph);
-                }
-            }
+            EdgeIndex = Edge->NextEdgeIndex;
+            Edge      = UIGetGraphEdge(EdgeIndex, LayoutGraph);
         }
 
-        CanContinue = Iterator->IsValid;
+        *Result     = UIGraphNodeHandleFromIndex(NodeIndex);
+        CanContinue = true;
     }
 
     return CanContinue;
@@ -1127,12 +1019,14 @@ UIGraphIteratorNextWave(ui_graph_iterator *Iterator)
 typedef struct
 {
     ui_linear_allocator FrameAllocator;
+    ui_directed_graph  *LayoutGraph;
 } ui_window;
 
 
 typedef struct
 {
-    uint64_t FrameMemorySize;
+    uint64_t                 FrameMemorySize;
+    ui_directed_graph_params LayoutGraph;
 } ui_window_params;
 
 
@@ -1141,6 +1035,8 @@ UIWindowMemorySize(ui_window_params Params)
 {
     ui_memory_size_counter Counter = {};
     {
+        Counter.Size += UIDirectedGraphMemorySize(Params.LayoutGraph);
+
         UIMemorySizeCountBuffer(uint8_t, Params.FrameMemorySize, &Counter);
         UIMemorySizeCountStruct(ui_window, &Counter);
     }
@@ -1158,11 +1054,14 @@ UIWindowMemoryInit(void *Memory, uint64_t Size, ui_window_params Params)
     ui_linear_allocator Allocator = UILinearAllocator(Memory, Size);
     if(UIIsValidLinearAllocator(&Allocator))
     {
-        uint8_t   *FrameMemory         = UIAllocateLinearArray(Params.FrameMemorySize, uint8_t, &Allocator);
-        ui_window *Window              = UIAllocateLinearStruct(ui_window, &Allocator);
+        uint64_t LayoutGraphSize   = UIDirectedGraphMemorySize(Params.LayoutGraph);
+        uint8_t *LayoutGraphMemory = UIAllocateLinearArray(LayoutGraphSize, uint8_t, &Allocator);
 
+        uint8_t   *FrameMemory = UIAllocateLinearArray(Params.FrameMemorySize, uint8_t, &Allocator);
+        ui_window *Window      = UIAllocateLinearStruct(ui_window, &Allocator);
         if(Window)
         {
+            Window->LayoutGraph    = UIDirectedGraphMemoryInit(LayoutGraphMemory, LayoutGraphSize, Params.LayoutGraph);
             Window->FrameAllocator = UILinearAllocator(FrameMemory, Params.FrameMemorySize);
         }
 
@@ -1179,16 +1078,26 @@ UIExecuteWindow(ui_window *Window)
     if(Window)
     {
         //
-        // Unsure what this would do really. Probably return some sort of draw commands for the caller.
-        // We still need to fully execute the layout context. Caching/Building/Computing or whatever.
-        // We don't really want to do this here. But _something_ has to do it and I wonder if we just cram everything
-        // in the layout context. Does that make any sort of sense? Maybe? Why not? It doesn't have to own the output, does it?
-        // It doesn't know how to crystalize. There's weird parallelism between contexts. Uhm... If we let the context execute...
-        // Well, one thing is certain: We want some sort of mapping between stuff, wheter it's animations, style, layout, there's still
-        // this concept of a "thing" (should probably find a name for that...) which I think the window should handle. So the other systems
-        // style/layout/animations should allow the user to record a key alongisde their data. Something like that? We can try it. Key is a simple
-        // number I think, fully opaque. Wrap it in a type so it's user overridable.
+        // Layout
         //
+
+        ui_directed_graph *LayoutGraph = Window->LayoutGraph;
+        if(UIIsValidDirectedGraph(LayoutGraph))
+        {
+            //
+            // Iterate the graph and execute the commands.
+            //
+
+            ui_graph_node_handle Handle   = {};
+            ui_graph_iterator    Iterator = UIBeginGraphIterator(Window->LayoutGraph, &Window->FrameAllocator);
+            while(UIGraphIteratorNext(&Iterator, &Handle))
+            {
+                //
+                // TODO:
+                // Use the handle to do _something_
+                //
+            }
+        }
     }
 }
 
@@ -1319,6 +1228,8 @@ UILeaveVerticalLayout(const ui_vertical_layout *Layout, ui_window *Window)
 
     if(Layout->SizingX.Type == UISizing_Fixed)
     {
+        ui_graph_node_handle ParentHandle = UIAddGraphNode(Window->LayoutGraph);
+
         for(ui_vertical_content_node *Node = Layout->FstContent; Node != 0; Node = Node->Next)
         {
             ui_vertical_content *Content = &Node->Content;
@@ -1336,27 +1247,6 @@ UILeaveVerticalLayout(const ui_vertical_layout *Layout, ui_window *Window)
             }
             else if(Content->SizingX.Type == UISizing_Percent)
             {
-                //
-                // Layout
-                // x) Allocate Command
-                // x) Fill Command
-                // x) Allocate Node
-                // x) Set Edge(s)
-                //
-                // Problem:
-                // The percent-size command relies on the natural output of the parent.
-                // Find a way to fill the command data, the percent command needs a reference to the parents natural size output, and how does
-                // that fit into the execution context is quite unclear.
-                //
-                // Execution Context:
-                // We iterate the graph in some way, which tells us which command to execute. It's always a command right, I mean it's technically
-                // opaque... but, it's a dependency graph so like. I guess it could be used for other things now that I think about it. Anyways,
-                // in our case, we would use one for the layout in the window context. The context then... Let's say we stick with the command
-                // allocator idea. Allocate a command, this gives us an offset, map a node to that offset, as we iterate the graph we get offsets
-                // back into commands, read them, execute them. The problem with this are the delayed commands. When commands depend on the output
-                // from a previous commands. For example, the % case, the command needs to know what the parent's natural size was. Either, the %
-                // command has a reference to the parent's natural size output or the parent's natural size writes into the % command once done.
-                //
             }
             else if(Content->SizingX.Type == UISizing_Fit)
             {

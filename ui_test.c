@@ -5,17 +5,48 @@
 
 int main()
 {
-    ui_directed_graph_params Params =
+    ui_window_params Params =
     {
-        .NodeCount = 100,
-        .EdgeCount = 200,
+        .FrameMemorySize = UI_KIB(16),
+
+        .LayoutGraph.NodeCount = 100,
+        .LayoutGraph.EdgeCount = 200,
     };
 
-    uint64_t           GraphSize = UIDirectedGraphMemorySize(Params);
-    void              *Memory    = malloc(GraphSize);
-    ui_directed_graph *Graph     = UIDirectedGraphMemoryInit(Memory, GraphSize, Params);
+    uint64_t   WindowSize = UIWindowMemorySize(Params);
+    void      *Memory     = calloc(WindowSize, 1);
+    ui_window *Window     = UIWindowMemoryInit(Memory, WindowSize, Params);
 
-    ui_window *Window = 0;
+    if(Window)
+    {
+        ui_directed_graph *LayoutGraph = Window->LayoutGraph;
+
+        ui_graph_node_handle Handle   = {};
+        ui_graph_iterator    Iterator = UIBeginGraphIterator(LayoutGraph, &Window->FrameAllocator);
+
+        while(UIGraphIteratorNext(&Iterator, &Handle))
+        {
+            assert(false);
+        }
+
+        ui_graph_node_handle HandleA = UIAddGraphNode(LayoutGraph);
+
+        Iterator = UIBeginGraphIterator(LayoutGraph, &Window->FrameAllocator);
+        while(UIGraphIteratorNext(&Iterator, &Handle))
+        {
+            assert(true);
+        }
+
+        ui_graph_node_handle HandleB = UIAddGraphNode(LayoutGraph);
+        UIAddGraphEdgeFromHandle(HandleA, HandleB, LayoutGraph);
+
+        Iterator = UIBeginGraphIterator(LayoutGraph, &Window->FrameAllocator);
+        while(UIGraphIteratorNext(&Iterator, &Handle))
+        {
+            assert(true);
+        }
+    }
+
     if(Window)
     {
         // while(true)
