@@ -1012,6 +1012,49 @@ UIGraphIteratorNext(ui_graph_iterator *Iterator, ui_graph_node_handle *Result)
 
 
 // ==========================================================
+// [SECTION] LAYOUT COMMAND ALLOCATOR
+// ==========================================================
+// [HISTORY]
+// ==========================================================
+
+
+typedef struct
+{
+    uint64_t Value;
+} ui_command_key;
+
+typedef struct
+{
+    float FixedSize;
+    float MinSize;
+    float MaxSize;
+} ui_fixed_sizing_command;
+
+
+typedef struct
+{
+    ui_command_key SelfSizeSource;
+    float          PaddingA;
+    float          PaddingB;
+    float          BorderWidth;
+    float          BorderInset;
+} ui_axis_box_sizing_command;
+
+
+typedef struct
+{
+    ui_command_key *ChildSizeSource;
+    uint32_t        ChildCount;
+    ui_command_key  ContentSizeSource;
+    float           Spacing;
+    float           Padding;
+    float           BorderWidth;
+    float           BorderInset;
+    UIJustify       Justify;
+} ui_place_major_axis_command;
+
+
+// ==========================================================
 // [SECTION] : WINDOW
 // ==========================================================
 
@@ -1096,6 +1139,17 @@ UIExecuteWindow(ui_window *Window)
                 // TODO:
                 // Use the handle to do _something_
                 //
+                // This is where we need to route the data. Now, the problem is:
+                // We still don't allocate command/haven't specified what a command contains.
+                // I'm struggling to figure out at what level that allocator actually sits.
+                // It seems like something that's internal only. Which is somehow specific to a window.
+                // Well the window has to use it. Okay first of all, relying on the stable ID to index into a table
+                // is stupid and has a lot of downsides. A user key is much better from what I can tell. In any case.
+                // I guess what I am trying to figure out is how much context the allocator actually needs. We need to map
+                // a simple key to a command. I feel like it doesn't need very much context..
+                //
+
+                Handle.ID;
             }
         }
     }
@@ -1220,37 +1274,117 @@ UIPushVerticalContent(ui_vertical_layout *Layout)
     return Result;
 }
 
+//
+// This looks... fine? I still need a way to route the data to the execution pipeline though.
+// So we probably need to define these commands data-wise. Still this question of dealing/routing
+// the outputs... Uhm.
+//
+
 
 static void
 UILeaveVerticalLayout(const ui_vertical_layout *Layout, ui_window *Window)
 {
-    ui_directed_graph *Graph = 0;
+    ui_linear_allocator *Allocator   = &Window->FrameAllocator;
+    ui_directed_graph   *LayoutGraph = Window->LayoutGraph;
+
+    //
+    //
+    //
+
+    uint32_t              ContentCount      = Layout->ContentCount;
+    ui_graph_node_handle *ChildrenBoxModelX = UIAllocateLinearArray(ContentCount, ui_graph_node_handle, Allocator);
+    ui_graph_node_handle *ChildrenBoxModelY = UIAllocateLinearArray(ContentCount, ui_graph_node_handle, Allocator);
+    ui_graph_node_handle  ParentBoxModelX   = UIAddGraphNode(LayoutGraph);
+    ui_graph_node_handle  ParentBoxModelY   = UIAddGraphNode(LayoutGraph);
+    
+    //
+    // X-Axis Sizing (Minor Axis)
+    //
 
     if(Layout->SizingX.Type == UISizing_Fixed)
     {
-        ui_graph_node_handle ParentHandle = UIAddGraphNode(Window->LayoutGraph);
+        ui_graph_node_handle ParentSizeX = UIAddGraphNode(LayoutGraph);
+        {
+            UIAddGraphEdgeFromHandle(ParentSizeX, ParentBoxModelX, LayoutGraph);
+        }
 
+        uint32_t ChildIndex = 0;
         for(ui_vertical_content_node *Node = Layout->FstContent; Node != 0; Node = Node->Next)
         {
             ui_vertical_content *Content = &Node->Content;
 
             if(Content->SizingX.Type == UISizing_Fixed)
             {
-                //
-                // Layout
-                // x) Allocate Command
-                // x) Fill Command
-                // x) Allocate Node
-                // x) Set Edge(s)
-                //
+                ui_graph_node_handle ChildSizeX     = UIAddGraphNode(LayoutGraph);
+                ui_graph_node_handle ChildBoxModelX = UIAddGraphNode(LayoutGraph);
+                {
+                    UIAddGraphEdgeFromHandle(ChildSizeX, ChildBoxModelX, LayoutGraph);
+                }
 
+                ChildrenBoxModelX[ChildIndex] = ChildBoxModelX;
+                ChildIndex                   += 1;
             }
-            else if(Content->SizingX.Type == UISizing_Percent)
+        }
+    }
+
+    //
+    // Y-Axis Sizing (Major Axis)
+    //
+
+    if(Layout->SizingY.Type == UISizing_Fixed)
+    {
+        ui_graph_node_handle ParentSizeY = UIAddGraphNode(LayoutGraph);
+        {
+            UIAddGraphEdgeFromHandle(ParentSizeY, ParentBoxModelY, LayoutGraph);
+        }
+
+        uint32_t ChildIndex = 0;
+        for(ui_vertical_content_node *Node = Layout->FstContent; Node != 0; Node = Node->Next)
+        {
+            ui_vertical_content *Content = &Node->Content;
+
+            if(Content->SizingY.Type == UISizing_Fixed)
             {
+                ui_graph_node_handle ChildSizeY     = UIAddGraphNode(LayoutGraph);
+                ui_graph_node_handle ChildBoxModelY = UIAddGraphNode(LayoutGraph);
+                {
+                    UIAddGraphEdgeFromHandle(ChildSizeY, ChildBoxModelY, LayoutGraph);
+                }
+
+                ChildrenBoxModelY[ChildIndex] = ChildBoxModelY;
+                ChildIndex                   += 1;
             }
-            else if(Content->SizingX.Type == UISizing_Fit)
+        }
+    }
+
+    //
+    // X-Axis Placing (Minor Axis)
+    //
+
+    {
+        uint32_t ChildIndex = 0;
+        for(ui_vertical_content_node *Node = Layout->FstContent; Node != 0; Node = Node->Next)
+        {
+            ui_graph_node_handle PlaceChildX = UIAddGraphNode(LayoutGraph);
             {
+                UIAddGraphEdgeFromHandle(ParentBoxModelX              , PlaceChildX, LayoutGraph);
+                UIAddGraphEdgeFromHandle(ChildrenBoxModelX[ChildIndex], PlaceChildX, LayoutGraph);
             }
+        }
+    }
+
+    //
+    // Y-Axis Placing (Major Axis)
+    //
+
+    ui_graph_node_handle PlaceAxisY = UIAddGraphNode(LayoutGraph);
+    {
+        UIAddGraphEdgeFromHandle(ParentBoxModelY, PlaceAxisY, LayoutGraph);
+
+        uint32_t ChildIndex = 0;
+        for(ui_vertical_content_node *Node = Layout->FstContent; Node != 0; Node = Node->Next)
+        {
+            UIAddGraphEdgeFromHandle(ChildrenBoxModelY[ChildIndex], PlaceAxisY, LayoutGraph);
         }
     }
 }
