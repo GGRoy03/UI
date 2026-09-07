@@ -10,26 +10,7 @@
 # include <stdint.h>
 # include <assert.h>
 # include <stdbool.h>
-
-
-// ==========================================================
-// [SECTION] DIRECTED GRAPH
-// ==========================================================
-// [DESCRIPTION]
-// ==========================================================
-
-
-typedef struct
-{
-    uint32_t ID;
-} ui_graph_node_handle;
-
-
-typedef struct ui_directed_graph ui_directed_graph;
-
-
-# ifdef UI_IMPLEMENTATION
-# endif
+# include <stdlib.h>
 
 
 // ==========================================================
@@ -48,8 +29,10 @@ typedef struct ui_directed_graph ui_directed_graph;
 # endif
 
 
-# ifdef UI_COMPILER_CLANG
+# if defined(UI_COMPILER_CLANG)
 #  define UI_ALIGN_OF(X) (__alignof__(X))
+# elif defined(UI_COMPILER_MSVC)
+#  define UI_ALIGN_OF(X) (alignof(X)) 
 # else
 #  error "UNIMPLEMENTED ALIGNOF MACRO"
 # endif
@@ -74,6 +57,117 @@ typedef struct ui_directed_graph ui_directed_graph;
 # define UI_BIT_MASK(BitCount)          ((1ull << BitCount) - 1ull)
 # define UI_CHECK_BIT_MASK(Value, Mask) ((Value & Mask))
 # define UI_IS_POWER_OF_TWO(X)          ((X) && ((X & (X - 1)) == 0))
+
+
+// ==========================================================
+// [SECTION] LAYOUT GRAPH
+// ==========================================================
+// [DESCRIPTION]
+// ==========================================================
+
+
+typedef struct
+{
+    uint32_t ID;
+} ui_graph_node_handle;
+
+
+typedef struct ui_layout_graph ui_layout_graph;
+
+
+// ==========================================================
+// [SECTION] LAYOUT RESOURCES
+// ==========================================================
+// [DESCRIPTION]
+// ==========================================================
+
+
+typedef struct
+{
+    uint32_t Start;
+    uint32_t Count;
+} ui_layout_resource_handle;
+
+
+typedef struct
+{
+    ui_layout_resource_handle Value;
+} ui_layout_read_handle;
+
+
+typedef struct
+{
+    ui_layout_resource_handle Value;
+} ui_layout_write_handle;
+
+
+// ==========================================================
+// [SECTION] LAYOUT COMMANDS
+// ==========================================================
+// [DESCRIPTION]
+// ==========================================================
+
+
+typedef enum
+{
+    UIJustify_Start        = 0,
+    UIJustify_Center       = 1,
+    UIJustify_End          = 2,
+    UIJustify_SpaceBetween = 3,
+    UIJustify_SpaceAround  = 4,
+    UIJustify_SpaceEvenly  = 5,
+} UIJustify;
+
+
+typedef enum
+{
+    UIAlignment_Start  = 0,
+    UIAlignment_Center = 1,
+    UIAlignment_End    = 2,
+} UIAlignment;
+
+
+typedef struct
+{
+    float                   Spacing;
+    float                   Padding;
+    float                   BorderWidth;
+    float                   BorderInset;
+    UIJustify               Justify;
+    ui_layout_read_handle   ParentAxisBox;
+    ui_layout_read_handle  *ChildrenAxisBox;
+    ui_layout_write_handle *ChildrenPosition;
+} ui_place_major_axis_command;
+
+
+typedef struct
+{
+    float                  Padding;
+    float                  BorderWidth;
+    float                  BorderInset;
+    UIAlignment            Alignment;
+    ui_layout_read_handle  ParentAxisBox;
+    ui_layout_read_handle  ChildAxisBox;
+    ui_layout_write_handle ChildPosition;
+} ui_place_minor_axis_command;
+
+
+#define UI_LAYOUT_COMMAND_TYPES(X) \
+    X(ui_place_major_axis_command, UILayoutCommand_PlaceMajorAxis) \
+    X(ui_place_minor_axis_command, UILayoutCommand_PlaceMinorAxis)
+
+
+typedef enum
+{
+#define X(Type, Tag) Tag,
+    UI_LAYOUT_COMMAND_TYPES(X)
+#undef X
+} UILayoutCommand;
+
+
+# ifdef UI_IMPLEMENTATION
+# endif
+
 
 
 // ==========================================================
@@ -281,24 +375,6 @@ UIMemorySizeCounterWorstCase(uint32_t Align, ui_memory_size_counter Counter)
 // ==========================================================
 
 
-typedef enum
-{
-    UIJustify_Start        = 0,
-    UIJustify_Center       = 1,
-    UIJustify_End          = 2,
-    UIJustify_SpaceBetween = 3,
-    UIJustify_SpaceAround  = 4,
-    UIJustify_SpaceEvenly  = 5,
-} UIJustify;
-
-
-typedef enum
-{
-    UIAlignment_Start  = 0,
-    UIAlignment_Center = 1,
-    UIAlignment_End    = 2,
-} UIAlignment;
-
 
 typedef struct
 {
@@ -329,7 +405,7 @@ static ui_axis_box
 UISizeAxisBox(float SelfSize, float PaddingA, float PaddingB, float BorderWidth, float BorderInset)
 {
     //
-    // The BorderInset value specicies how much of the border is inside the element visually.
+    // The BorderInset value specifies how much of the border is inside the element visually.
     // For example, a border inset of 0.0f means the border is full outside the element and a border
     // inset of 1.0f means the border is fully inside the element.
     //
@@ -478,14 +554,109 @@ UIPlaceMinorAxis(float ContentSize, float ChildSize, float Padding, float Border
     return Result;
 }
 
-
 // ==========================================================
-// [SECTION] DIRECTED GRAPH
-// ==========================================================
-// [HISTORY]
-// [8/27/2026]: Basic Directed Graph Implementation
+// [SECTION] LAYOUT COMMANDS
 // ==========================================================
 
+//
+// This would be the "safe" wrappers? And we have the unsafe function doing the core work?
+// I mean.. if I can get it to compile at all. Yeah, it wasn't compiled with C11.
+// This is very very experimental.
+//
+
+#define UIAcquireLayoutCommand(Type, Allocator) ((Type *)_Generic((Type *)0, \
+        ui_place_major_axis_command *: UIAcquireCommandMemoryFromType(sizeof(Type), UI_ALIGN_OF(Type), Allocator) \
+        ui_place_minor_axis_command *: UIAcquireCommandMemoryFromType(sizeof(Type), UI_ALIGN_OF(Type), Allocator) \
+    ))
+
+#define UIAcquireLayoutCommandData(Type, Allocator) 0
+
+
+typedef struct
+{
+    ui_linear_allocator FramePool;
+} ui_layout_command_allocator;
+
+
+static bool
+UIIsValidLayoutCommandAllocator(const ui_layout_command_allocator *Allocator)
+{
+    bool Result = Allocator && UIIsValidLinearAllocator(&Allocator->FramePool);
+    return Result;
+}
+
+
+static void *
+UIAcquireUntypedCommandMemory(size_t Size, size_t Align, ui_layout_command_allocator *Allocator)
+{
+    void *Result = 0;
+
+    if(UIIsValidLayoutCommandAllocator(Allocator))
+    {
+        assert(Size);
+        assert(Align);
+
+        Result = UIAllocateLinearAligned(Size, Align, &Allocator->FramePool);
+    }
+
+    return Result;
+}
+
+
+// ==========================================================
+// [SECTION] LAYOUT GRAPH
+// ==========================================================
+
+//
+// EXPERIMENTAL
+//
+
+
+
+
+typedef struct
+{
+    float Value;
+} ui_float_layout_resource;
+
+
+typedef struct
+{
+    ui_axis_box Value;
+} ui_axis_box_layout_resource;
+
+
+typedef struct
+{
+    union
+    {
+        ui_float_layout_resource     Float;
+        ui_axis_box_layout_resource  AxisBox;
+    };
+} ui_layout_resource;
+
+
+
+typedef struct ui_layout_resource_node ui_layout_resource_node;
+struct ui_layout_resource_node
+{
+    ui_layout_resource_node  *Next;
+    uint32_t                  ResourceID;
+    uint32_t                  GraphNodeIndex;
+};
+
+
+typedef struct
+{
+    ui_layout_resource_node *First;
+    ui_layout_resource_node *Last;
+    uint32_t                 Count;
+} ui_layout_resource_list;
+
+
+//
+// EXPERIMENTAL
+//
 
 typedef struct
 {
@@ -497,21 +668,38 @@ typedef struct
 typedef struct
 {
     uint32_t FirstEdgeIndex;
-    uint32_t Degree;
+    uint32_t DependencyCount;
+
+    UILayoutCommand CommandType;
+    union
+    {
+        ui_place_major_axis_command *MajorAxis;
+        void                        *Pointer;
+    } Command;
 } ui_graph_node;
 
 
-struct ui_directed_graph
+struct ui_layout_graph
 {
     ui_graph_node *Nodes;
     uint32_t       NodeCount;
     ui_graph_edge *Edges;
     uint32_t       EdgeCount;
+
+    //
+    // Experimental
+    //
+
+    ui_linear_allocator      FrameAllocator;
+    ui_layout_resource_list  ReadList;
+    ui_layout_resource_list  WriteList;
+    ui_layout_resource       Resources[128];
+    uint32_t                 ResourceCount;
 };
 
 
 static bool
-UIIsValidDirectedGraph(const ui_directed_graph *Graph)
+UIIsValidLayoutGraph(const ui_layout_graph *Graph)
 {
     bool Result = Graph && Graph->Nodes && Graph->Edges;
     return Result;
@@ -529,9 +717,9 @@ UIGraphNodeHandleFromIndex(uint32_t Index)
 
 
 static ui_graph_node *
-UIGetGraphNodeSentinel(const ui_directed_graph *Graph)
+UIGetGraphNodeSentinel(const ui_layout_graph *Graph)
 {
-    assert(UIIsValidDirectedGraph(Graph));
+    assert(UIIsValidLayoutGraph(Graph));
 
     ui_graph_node *Result = Graph->Nodes;
     return Result;
@@ -539,9 +727,9 @@ UIGetGraphNodeSentinel(const ui_directed_graph *Graph)
 
 
 static ui_graph_node *
-UIGetGraphNode(uint32_t Index, const ui_directed_graph *Graph)
+UIGetGraphNode(uint32_t Index, const ui_layout_graph *Graph)
 {
-    assert(UIIsValidDirectedGraph(Graph));
+    assert(UIIsValidLayoutGraph(Graph));
 
     ui_graph_node *Result = 0;
 
@@ -554,18 +742,10 @@ UIGetGraphNode(uint32_t Index, const ui_directed_graph *Graph)
 }
 
 
-static ui_graph_node *
-UIGetGraphNodeFromHandle(ui_graph_node_handle Handle, const ui_directed_graph *Graph)
-{
-    ui_graph_node *Result = UIGetGraphNode(Handle.ID, Graph);
-    return Result;
-}
-
-
 static ui_graph_edge *
-UIGetGraphEdgeSentinel(const ui_directed_graph *Graph)
+UIGetGraphEdgeSentinel(const ui_layout_graph *Graph)
 {
-    assert(UIIsValidDirectedGraph(Graph));
+    assert(UIIsValidLayoutGraph(Graph));
 
     ui_graph_edge *Result = Graph->Edges;
     return Result;
@@ -573,9 +753,9 @@ UIGetGraphEdgeSentinel(const ui_directed_graph *Graph)
 
 
 static ui_graph_edge *
-UIGetGraphEdge(uint32_t Index, const ui_directed_graph *Graph)
+UIGetGraphEdge(uint32_t Index, const ui_layout_graph *Graph)
 {
-    assert(UIIsValidDirectedGraph(Graph));
+    assert(UIIsValidLayoutGraph(Graph));
 
     ui_graph_edge *Result = 0;
 
@@ -588,44 +768,10 @@ UIGetGraphEdge(uint32_t Index, const ui_directed_graph *Graph)
 }
 
 
-static ui_graph_node *
-UIGetGraphNodeFromEdge(uint32_t Index, const ui_directed_graph *Graph)
-{
-    assert(Graph);
-
-    ui_graph_node *Result = 0;
-
-    ui_graph_edge *Edge = UIGetGraphEdge(Index, Graph);
-    if(Edge)
-    {
-        Result = UIGetGraphNode(Edge->TargetNodeIndex, Graph);
-    }
-
-    return Result;
-}
-
-
-static uint32_t
-UIGetNextGraphEdgeFromEdge(uint32_t Index, const ui_directed_graph *Graph)
-{
-    assert(UIIsValidDirectedGraph(Graph));
-
-    uint32_t Result = {};
-
-    ui_graph_edge *Edge = UIGetGraphEdge(Index, Graph);
-    if(Edge)
-    {
-        Result = Edge->NextEdgeIndex;
-    }
-
-    return Result;
-}
-
-
 static void
-UIFreeGraphEdge(uint32_t EdgeIndex, ui_directed_graph *Graph)
+UIFreeGraphEdge(uint32_t EdgeIndex, ui_layout_graph *Graph)
 {
-    assert(UIIsValidDirectedGraph(Graph));
+    assert(UIIsValidLayoutGraph(Graph));
 
     ui_graph_edge *Sentinel = UIGetGraphEdgeSentinel(Graph);
     assert(Sentinel);
@@ -644,9 +790,9 @@ UIFreeGraphEdge(uint32_t EdgeIndex, ui_directed_graph *Graph)
 
 
 static uint32_t
-UIPopFreeGraphEdge(ui_directed_graph *Graph)
+UIPopFreeGraphEdge(ui_layout_graph *Graph)
 {
-    assert(UIIsValidDirectedGraph(Graph));
+    assert(UIIsValidLayoutGraph(Graph));
 
     ui_graph_edge *Sentinel = UIGetGraphEdgeSentinel(Graph);
     assert(Sentinel);
@@ -663,9 +809,9 @@ UIPopFreeGraphEdge(ui_directed_graph *Graph)
 
 
 static uint32_t
-UIPopFreeGraphNode(ui_directed_graph *Graph)
+UIPopFreeGraphNode(ui_layout_graph *Graph)
 {
-    assert(UIIsValidDirectedGraph(Graph));
+    assert(UIIsValidLayoutGraph(Graph));
 
     uint32_t Result = 0;
 
@@ -673,11 +819,11 @@ UIPopFreeGraphNode(ui_directed_graph *Graph)
     assert(Sentinel);
 
     uint32_t       EdgeIndex = Sentinel->FirstEdgeIndex;
-    ui_graph_edge *Edge      = UIGetGraphEdge(Sentinel->FirstEdgeIndex, Graph);
+    ui_graph_edge *Edge      = UIGetGraphEdge(EdgeIndex, Graph);
     if(Edge)
     {
         uint32_t       NodeIndex = Edge->TargetNodeIndex;
-        ui_graph_node *Node      = UIGetGraphNode(Edge->TargetNodeIndex, Graph);
+        ui_graph_node *Node      = UIGetGraphNode(NodeIndex, Graph);
         if(Node)
         {
             assert(Node != Sentinel);
@@ -694,19 +840,19 @@ UIPopFreeGraphNode(ui_directed_graph *Graph)
 
 
 static ui_graph_node_handle
-UIAddGraphNode(ui_directed_graph *Graph)
+UIAddLayoutGraphNode(ui_layout_graph *Graph)
 {
     ui_graph_node_handle Result = {};
 
-    if(UIIsValidDirectedGraph(Graph))
+    if(UIIsValidLayoutGraph(Graph))
     {
         uint32_t       NodeIndex = UIPopFreeGraphNode(Graph);
         ui_graph_node *Node      = UIGetGraphNode(NodeIndex, Graph);
 
         if(Node)
         {
-            Node->Degree         = 0;
-            Node->FirstEdgeIndex = 0;
+            Node->FirstEdgeIndex   = 0;
+            Node->DependencyCount      = 0;
         }
 
         Result = UIGraphNodeHandleFromIndex(NodeIndex);
@@ -717,14 +863,24 @@ UIAddGraphNode(ui_directed_graph *Graph)
 
 
 static void
-UIAddGraphEdge(uint32_t Source, uint32_t Target, ui_directed_graph *Graph)
+UIAddGraphEdge(uint32_t Source, uint32_t Target, ui_layout_graph *Graph)
 {
-    if(UIIsValidDirectedGraph(Graph))
+    if(UIIsValidLayoutGraph(Graph))
     {
         ui_graph_node *SourceNode = UIGetGraphNode(Source, Graph);
         ui_graph_node *TargetNode = UIGetGraphNode(Target, Graph);
+
         if(SourceNode && TargetNode)
         {
+            //
+            // Successor (Source->Target)
+            //
+
+
+            //
+            // Predecessor (Target->Source)
+            //
+
             uint32_t       EdgeIndex = UIPopFreeGraphEdge(Graph);
             ui_graph_edge *Edge      = UIGetGraphEdge(EdgeIndex, Graph);
 
@@ -734,7 +890,7 @@ UIAddGraphEdge(uint32_t Source, uint32_t Target, ui_directed_graph *Graph)
                 Edge->NextEdgeIndex   = SourceNode->FirstEdgeIndex;
 
                 SourceNode->FirstEdgeIndex = EdgeIndex;
-                TargetNode->Degree        += 1;
+                TargetNode->DependencyCount    += 1;
             }
         }
     }
@@ -742,7 +898,7 @@ UIAddGraphEdge(uint32_t Source, uint32_t Target, ui_directed_graph *Graph)
 
 
 static void
-UIAddGraphEdgeFromHandle(ui_graph_node_handle Source, ui_graph_node_handle Target, ui_directed_graph *Graph)
+UIAddGraphEdgeFromHandle(ui_graph_node_handle Source, ui_graph_node_handle Target, ui_layout_graph *Graph)
 {
     UIAddGraphEdge(Source.ID, Target.ID, Graph);
 }
@@ -752,29 +908,29 @@ typedef struct
 {
     uint32_t NodeCount;
     uint32_t EdgeCount;
-} ui_directed_graph_params;
+} ui_layout_graph_params;
 
 
 static uint64_t
-UIDirectedGraphMemorySize(ui_directed_graph_params Params)
+UILayoutGraphMemorySize(ui_layout_graph_params Params)
 {
     ui_memory_size_counter Counter = {};
     {
         UIMemorySizeCountBuffer(ui_graph_node, Params.NodeCount, &Counter);
         UIMemorySizeCountBuffer(ui_graph_edge, Params.EdgeCount, &Counter);
 
-        UIMemorySizeCountStruct(ui_directed_graph, &Counter);
+        UIMemorySizeCountStruct(ui_layout_graph, &Counter);
     }
 
-    uint64_t Result = UIMemorySizeCounterWorstCase(UI_ALIGN_OF(ui_directed_graph), Counter);
+    uint64_t Result = UIMemorySizeCounterWorstCase(UI_ALIGN_OF(ui_layout_graph), Counter);
     return Result;
 }
 
 
-static ui_directed_graph *
-UIDirectedGraphMemoryInit(void *Memory, uint64_t Size, ui_directed_graph_params Params)
+static ui_layout_graph *
+UILayoutGraphMemoryInit(void *Memory, uint64_t Size, ui_layout_graph_params Params)
 {
-    ui_directed_graph *Result = 0;
+    ui_layout_graph *Result = 0;
 
     ui_linear_allocator Allocator = UILinearAllocator(Memory, Size);
     if(UIIsValidLinearAllocator(&Allocator))
@@ -782,7 +938,7 @@ UIDirectedGraphMemoryInit(void *Memory, uint64_t Size, ui_directed_graph_params 
         ui_graph_node *Nodes = UIAllocateLinearArray(Params.NodeCount, ui_graph_node, &Allocator);
         ui_graph_edge *Edges = UIAllocateLinearArray(Params.EdgeCount, ui_graph_edge, &Allocator);
 
-        ui_directed_graph *Graph = UIAllocateLinearStruct(ui_directed_graph, &Allocator);
+        ui_layout_graph *Graph = UIAllocateLinearStruct(ui_layout_graph, &Allocator);
         if(Graph)
         {
             Graph->Nodes     = Nodes;
@@ -821,7 +977,7 @@ UIDirectedGraphMemoryInit(void *Memory, uint64_t Size, ui_directed_graph_params 
             {
                 ui_graph_node *Node = UIGetGraphNode(NodeIdx, Graph);
                 Node->FirstEdgeIndex = 0;
-                Node->Degree         = 0;
+                Node->DependencyCount         = 0;
             }
 
             for(uint32_t NodeIdx = 0; NodeIdx < Params.NodeCount; ++NodeIdx)
@@ -859,8 +1015,8 @@ typedef struct
 
 typedef struct
 {
-    const ui_directed_graph *Graph;
-    uint32_t                *NodeDegree;
+    const ui_layout_graph *Graph;
+    uint32_t                *NodeDependencyCount;
     uint32_t                 NodeCount;
     ui_graph_iterator_worker Worker;
 } ui_graph_iterator;
@@ -936,16 +1092,16 @@ UIPopLastNodeFromIterator(ui_graph_iterator_worker *Worker)
 
 
 static ui_graph_iterator
-UIBeginGraphIterator(const ui_directed_graph *Graph, ui_linear_allocator *Allocator)
+UIBeginGraphIterator(const ui_layout_graph *Graph, ui_linear_allocator *Allocator)
 {
     ui_graph_iterator Result = {};
 
-    if(UIIsValidDirectedGraph(Graph) && UIIsValidLinearAllocator(Allocator))
+    if(UIIsValidLayoutGraph(Graph) && UIIsValidLinearAllocator(Allocator))
     {
         ui_graph_iterator Iterator =
         {
             .Graph      = Graph,
-            .NodeDegree = UIAllocateLinearArray(Graph->NodeCount, uint32_t, Allocator),
+            .NodeDependencyCount = UIAllocateLinearArray(Graph->NodeCount, uint32_t, Allocator),
             .NodeCount  = Graph->NodeCount,
         };
 
@@ -954,13 +1110,13 @@ UIBeginGraphIterator(const ui_directed_graph *Graph, ui_linear_allocator *Alloca
             ui_graph_node *Node = UIGetGraphNode(NodeIdx, Graph);
             assert(Node);
 
-            if(Node->Degree == 0)
+            if(Node->DependencyCount == 0)
             {
                 UIPushNodeInIterator(NodeIdx, &Iterator.Worker);
             }
             else
             {
-                Iterator.NodeDegree[NodeIdx] = Node->Degree;
+                Iterator.NodeDependencyCount[NodeIdx] = Node->DependencyCount;
             }
         }
 
@@ -976,7 +1132,7 @@ UIGraphIteratorNext(ui_graph_iterator *Iterator, ui_graph_node_handle *Result)
 {
     bool CanContinue = false;
 
-    const ui_directed_graph  *LayoutGraph = Iterator->Graph;
+    const ui_layout_graph  *LayoutGraph = Iterator->Graph;
     ui_graph_iterator_worker *Worker      = &Iterator->Worker;
 
     uint32_t             NodeIndex = UIPopNextNodeFromIterator(Worker);
@@ -988,16 +1144,16 @@ UIGraphIteratorNext(ui_graph_iterator *Iterator, ui_graph_node_handle *Result)
         while(Edge && Edge != UIGetGraphEdgeSentinel(LayoutGraph))
         {
             uint32_t TargetIndex   = Edge->TargetNodeIndex;
-            uint32_t CurrentDegree = Iterator->NodeDegree[TargetIndex];
-            assert(CurrentDegree > 0);
+            uint32_t CurrentDependencyCount = Iterator->NodeDependencyCount[TargetIndex];
+            assert(CurrentDependencyCount > 0);
 
-            CurrentDegree -= 1;
-            if (CurrentDegree == 0)
+            CurrentDependencyCount -= 1;
+            if (CurrentDependencyCount == 0)
             {
                 UIPushNodeInIterator(TargetIndex, Worker);
             }
 
-            Iterator->NodeDegree[TargetIndex] = CurrentDegree;
+            Iterator->NodeDependencyCount[TargetIndex] = CurrentDependencyCount;
 
             EdgeIndex = Edge->NextEdgeIndex;
             Edge      = UIGetGraphEdge(EdgeIndex, LayoutGraph);
@@ -1011,47 +1167,199 @@ UIGraphIteratorNext(ui_graph_iterator *Iterator, ui_graph_node_handle *Result)
 }
 
 
-// ==========================================================
-// [SECTION] LAYOUT COMMAND ALLOCATOR
-// ==========================================================
-// [HISTORY]
-// ==========================================================
+//
+// Experimenting with resources.
+//
 
 
-typedef struct
+
+static ui_layout_resource_handle
+UIAcquireFloatLayoutResource(uint32_t Count, ui_layout_graph *Graph)
 {
-    uint64_t Value;
-} ui_command_key;
+    ui_layout_resource_handle Result = {};
 
-typedef struct
+    if(UIIsValidLayoutGraph(Graph))
+    {
+    }
+
+    return Result;
+}
+
+
+//
+// This actually add the edges to the graph while parsing the read/write list.
+//
+
+
+static void
+UIBuildLayoutGraph(ui_layout_graph *Graph)
 {
-    float FixedSize;
-    float MinSize;
-    float MaxSize;
-} ui_fixed_sizing_command;
+    if(UIIsValidLayoutGraph(Graph))
+    {
+        //
+        // Intermediate table
+        //
+        // TODO:
+        // How big should this table be?
+        //
+
+        uint32_t *ResourceIDToProducerIndex = UIAllocateLinearArray(0, uint32_t, &Graph->FrameAllocator);
+
+        //
+        // Write-List
+        //
+
+        ui_layout_resource_list WriteList = Graph->WriteList;
+        for(ui_layout_resource_node *Node = WriteList.First; Node != 0; Node = Node->Next)
+        {
+            ResourceIDToProducerIndex[Node->ResourceID] = Node->GraphNodeIndex;
+        }
+
+        //
+        // Read-List
+        //
+
+        ui_layout_resource_list ReadList = Graph->ReadList;
+        for(ui_layout_resource_node *Node = ReadList.First; Node != 0; Node = Node->Next)
+        {
+            uint32_t ProducerIndex = ResourceIDToProducerIndex[Node->ResourceID];
+            if(ProducerIndex != 0)
+            {
+                uint32_t ConsumerIndex = Node->GraphNodeIndex;
+                UIAddGraphEdge(ProducerIndex, ConsumerIndex, Graph);
+            }
+        }
+    }
+}
 
 
-typedef struct
+//
+//
+//
+
+
+static void
+UIAppendLayoutResourceNode(uint32_t NodeIndex, ui_layout_resource_handle Handle, ui_layout_resource_list *List, ui_linear_allocator *Allocator)
 {
-    ui_command_key SelfSizeSource;
-    float          PaddingA;
-    float          PaddingB;
-    float          BorderWidth;
-    float          BorderInset;
-} ui_axis_box_sizing_command;
+    assert(List);
+    assert(UIIsValidLinearAllocator(Allocator));
+
+    ui_layout_resource_node *ResourceNode = UIAllocateLinearStruct(ui_layout_resource_node, Allocator);
+    if(ResourceNode)
+    {
+        if(!List->First)
+        {
+            List->First = ResourceNode;
+            List->Last  = ResourceNode;
+        }
+        else if(List->Last)
+        {
+            List->Last->Next = ResourceNode;
+            List->Last       = ResourceNode;
+        }
+
+        //
+        // TODO:
+        // Need to compute the resource unique ID.
+        //
+
+        ResourceNode->GraphNodeIndex = NodeIndex;
+        ResourceNode->ResourceID     = 0;
+    }
+}
 
 
-typedef struct
+static ui_layout_read_handle
+UIBindLayoutRead(ui_layout_resource_handle ResourceHandle, ui_graph_node_handle NodeHandle, ui_layout_graph *Graph)
 {
-    ui_command_key *ChildSizeSource;
-    uint32_t        ChildCount;
-    ui_command_key  ContentSizeSource;
-    float           Spacing;
-    float           Padding;
-    float           BorderWidth;
-    float           BorderInset;
-    UIJustify       Justify;
-} ui_place_major_axis_command;
+    ui_layout_read_handle Result = {};
+
+    if(UIIsValidLayoutGraph(Graph))
+    {
+        UIAppendLayoutResourceNode(NodeHandle.ID, ResourceHandle, &Graph->ReadList, &Graph->FrameAllocator);
+        Result = (ui_layout_read_handle){.Value = ResourceHandle};
+    }
+
+    return Result;
+}
+
+
+static ui_layout_write_handle
+UIBindLayoutWrite(ui_layout_resource_handle ResourceHandle, ui_graph_node_handle NodeHandle, ui_layout_graph *Graph)
+{
+    ui_layout_write_handle Result = {};
+
+    if(UIIsValidLayoutGraph(Graph))
+    {
+        UIAppendLayoutResourceNode(NodeHandle.ID, ResourceHandle, &Graph->WriteList, &Graph->FrameAllocator);
+        Result = (ui_layout_write_handle){.Value = ResourceHandle};
+    }
+
+    return Result;
+}
+
+
+static void *
+UIBindLayoutCommand(ui_graph_node_handle Handle, UILayoutCommand Type, ui_layout_graph *Graph)
+{
+    assert(UIIsValidLayoutGraph(Graph));
+
+    void *Result = 0;
+
+    if(UIIsValidLayoutGraph(Graph))
+    {
+        ui_graph_node *Node = UIGetGraphNode(Handle.ID, Graph);
+        if(Node && Node->Command.Pointer == 0)
+        {
+            Result = UIAcquireCommandMemoryFromType(Type, 0);
+            if(Result)
+            {
+                Node->Command.Pointer = Result;
+                Node->CommandType     = Type;
+            }
+        }
+    }
+
+    return Result;
+}
+
+
+static ui_place_major_axis_command *
+UIBindPlaceMajorAxisCommand(uint32_t ChildCount, ui_graph_node_handle Handle, ui_layout_graph *Graph)
+{
+    ui_place_major_axis_command *Result = 0;
+
+    if(UIIsValidLayoutGraph(Graph))
+    {
+        //
+        // This is just stupid... man. Hours on this and still stuck on the same stupid problem.
+        // Perhaps just reverse it... Hand the command pointer: UITryBindLayoutCommandToNode(Handle, CommandPtr, Graph)
+        // if true:
+        //    allocate the rest.
+        //
+        // That's fine. So just do that. It's not perfect, but we're wasting too much time on this insignificant piece of code.
+        //
+    }
+
+    return Result;
+
+    ui_place_major_axis_command *Result = (ui_place_major_axis_command *)UIBindLayoutCommand(Handle, UILayoutCommand_PlaceMajorAxis, Graph);
+    if(Result)
+    {
+        //
+        // It's just such a stupid problem, yet I've no clue how to fix it.
+        // There's some common behavior each time we allocate a command on a node right? Which means this is a graph operation?
+        // But the command itself also needs to do stuff to allocate the dynamic part of it. Which means it needs to allocate
+        // something on the graph. If bind layout command is internal, we can assume parameters passed to it are correct...
+        // and soooo. what's the problem exactly? Do we still want to deal with this X-Macro stuff? This weird table mapping
+        // type -> size/align... is it even useful? Well... why not? I am confused.
+        //
+        //
+
+        Result->ChildrenAxisBox;
+        Result->ChildrenPosition;
+    }
+}
 
 
 // ==========================================================
@@ -1062,14 +1370,14 @@ typedef struct
 typedef struct
 {
     ui_linear_allocator FrameAllocator;
-    ui_directed_graph  *LayoutGraph;
+    ui_layout_graph  *LayoutGraph;
 } ui_window;
 
 
 typedef struct
 {
     uint64_t                 FrameMemorySize;
-    ui_directed_graph_params LayoutGraph;
+    ui_layout_graph_params LayoutGraph;
 } ui_window_params;
 
 
@@ -1078,7 +1386,7 @@ UIWindowMemorySize(ui_window_params Params)
 {
     ui_memory_size_counter Counter = {};
     {
-        Counter.Size += UIDirectedGraphMemorySize(Params.LayoutGraph);
+        Counter.Size += UILayoutGraphMemorySize(Params.LayoutGraph);
 
         UIMemorySizeCountBuffer(uint8_t, Params.FrameMemorySize, &Counter);
         UIMemorySizeCountStruct(ui_window, &Counter);
@@ -1097,14 +1405,14 @@ UIWindowMemoryInit(void *Memory, uint64_t Size, ui_window_params Params)
     ui_linear_allocator Allocator = UILinearAllocator(Memory, Size);
     if(UIIsValidLinearAllocator(&Allocator))
     {
-        uint64_t LayoutGraphSize   = UIDirectedGraphMemorySize(Params.LayoutGraph);
+        uint64_t LayoutGraphSize   = UILayoutGraphMemorySize(Params.LayoutGraph);
         uint8_t *LayoutGraphMemory = UIAllocateLinearArray(LayoutGraphSize, uint8_t, &Allocator);
 
         uint8_t   *FrameMemory = UIAllocateLinearArray(Params.FrameMemorySize, uint8_t, &Allocator);
         ui_window *Window      = UIAllocateLinearStruct(ui_window, &Allocator);
         if(Window)
         {
-            Window->LayoutGraph    = UIDirectedGraphMemoryInit(LayoutGraphMemory, LayoutGraphSize, Params.LayoutGraph);
+            Window->LayoutGraph    = UILayoutGraphMemoryInit(LayoutGraphMemory, LayoutGraphSize, Params.LayoutGraph);
             Window->FrameAllocator = UILinearAllocator(FrameMemory, Params.FrameMemorySize);
         }
 
@@ -1124,8 +1432,8 @@ UIExecuteWindow(ui_window *Window)
         // Layout
         //
 
-        ui_directed_graph *LayoutGraph = Window->LayoutGraph;
-        if(UIIsValidDirectedGraph(LayoutGraph))
+        ui_layout_graph *LayoutGraph = Window->LayoutGraph;
+        if(UIIsValidLayoutGraph(LayoutGraph))
         {
             //
             // Iterate the graph and execute the commands.
@@ -1149,7 +1457,6 @@ UIExecuteWindow(ui_window *Window)
                 // a simple key to a command. I feel like it doesn't need very much context..
                 //
 
-                Handle.ID;
             }
         }
     }
@@ -1183,9 +1490,9 @@ typedef struct
     float        Spacing;
     ui_padding   Padding;
     float        BorderWidth;
-    UIAlignment  XAlignment;
-    UIAlignment  YAlignment;
-    uint32_t     ChildCount;
+    float        BorderInset;
+    UIAlignment  Align;
+    UIJustify    Justify;
     ui_sizing    SizingX;
     ui_sizing    SizingY;
     ui_size      MinSize;
@@ -1218,8 +1525,9 @@ UIEnterVerticalLayout(const ui_vertical_content *Content, ui_window *Window)
             Layout->Spacing     = 0.0f;
             Layout->Padding     = (ui_padding){};
             Layout->BorderWidth = 0.0f;
-            Layout->XAlignment  = UIAlignment_Start;
-            Layout->YAlignment  = UIAlignment_Start;
+            Layout->BorderInset = 0.0f;
+            Layout->Align       = UIAlignment_Start;
+            Layout->Justify     = UIJustify_Start;
             Layout->SizingX     = (Content != 0) ? Content->SizingX : (ui_sizing){};
             Layout->SizingY     = (Content != 0) ? Content->SizingY : (ui_sizing){};
             Layout->MinSize     = (Content != 0) ? Content->Min     : (ui_size){};
@@ -1285,7 +1593,7 @@ static void
 UILeaveVerticalLayout(const ui_vertical_layout *Layout, ui_window *Window)
 {
     ui_linear_allocator *Allocator   = &Window->FrameAllocator;
-    ui_directed_graph   *LayoutGraph = Window->LayoutGraph;
+    ui_layout_graph   *LayoutGraph = Window->LayoutGraph;
 
     //
     //
@@ -1294,8 +1602,8 @@ UILeaveVerticalLayout(const ui_vertical_layout *Layout, ui_window *Window)
     uint32_t              ContentCount      = Layout->ContentCount;
     ui_graph_node_handle *ChildrenBoxModelX = UIAllocateLinearArray(ContentCount, ui_graph_node_handle, Allocator);
     ui_graph_node_handle *ChildrenBoxModelY = UIAllocateLinearArray(ContentCount, ui_graph_node_handle, Allocator);
-    ui_graph_node_handle  ParentBoxModelX   = UIAddGraphNode(LayoutGraph);
-    ui_graph_node_handle  ParentBoxModelY   = UIAddGraphNode(LayoutGraph);
+    ui_graph_node_handle  ParentBoxModelX   = UIAddLayoutGraphNode(LayoutGraph);
+    ui_graph_node_handle  ParentBoxModelY   = UIAddLayoutGraphNode(LayoutGraph);
     
     //
     // X-Axis Sizing (Minor Axis)
@@ -1303,7 +1611,7 @@ UILeaveVerticalLayout(const ui_vertical_layout *Layout, ui_window *Window)
 
     if(Layout->SizingX.Type == UISizing_Fixed)
     {
-        ui_graph_node_handle ParentSizeX = UIAddGraphNode(LayoutGraph);
+        ui_graph_node_handle ParentSizeX = UIAddLayoutGraphNode(LayoutGraph);
         {
             UIAddGraphEdgeFromHandle(ParentSizeX, ParentBoxModelX, LayoutGraph);
         }
@@ -1315,8 +1623,8 @@ UILeaveVerticalLayout(const ui_vertical_layout *Layout, ui_window *Window)
 
             if(Content->SizingX.Type == UISizing_Fixed)
             {
-                ui_graph_node_handle ChildSizeX     = UIAddGraphNode(LayoutGraph);
-                ui_graph_node_handle ChildBoxModelX = UIAddGraphNode(LayoutGraph);
+                ui_graph_node_handle ChildSizeX     = UIAddLayoutGraphNode(LayoutGraph);
+                ui_graph_node_handle ChildBoxModelX = UIAddLayoutGraphNode(LayoutGraph);
                 {
                     UIAddGraphEdgeFromHandle(ChildSizeX, ChildBoxModelX, LayoutGraph);
                 }
@@ -1333,7 +1641,7 @@ UILeaveVerticalLayout(const ui_vertical_layout *Layout, ui_window *Window)
 
     if(Layout->SizingY.Type == UISizing_Fixed)
     {
-        ui_graph_node_handle ParentSizeY = UIAddGraphNode(LayoutGraph);
+        ui_graph_node_handle ParentSizeY = UIAddLayoutGraphNode(LayoutGraph);
         {
             UIAddGraphEdgeFromHandle(ParentSizeY, ParentBoxModelY, LayoutGraph);
         }
@@ -1345,8 +1653,8 @@ UILeaveVerticalLayout(const ui_vertical_layout *Layout, ui_window *Window)
 
             if(Content->SizingY.Type == UISizing_Fixed)
             {
-                ui_graph_node_handle ChildSizeY     = UIAddGraphNode(LayoutGraph);
-                ui_graph_node_handle ChildBoxModelY = UIAddGraphNode(LayoutGraph);
+                ui_graph_node_handle ChildSizeY     = UIAddLayoutGraphNode(LayoutGraph);
+                ui_graph_node_handle ChildBoxModelY = UIAddLayoutGraphNode(LayoutGraph);
                 {
                     UIAddGraphEdgeFromHandle(ChildSizeY, ChildBoxModelY, LayoutGraph);
                 }
@@ -1365,7 +1673,7 @@ UILeaveVerticalLayout(const ui_vertical_layout *Layout, ui_window *Window)
         uint32_t ChildIndex = 0;
         for(ui_vertical_content_node *Node = Layout->FstContent; Node != 0; Node = Node->Next)
         {
-            ui_graph_node_handle PlaceChildX = UIAddGraphNode(LayoutGraph);
+            ui_graph_node_handle PlaceChildX = UIAddLayoutGraphNode(LayoutGraph);
             {
                 UIAddGraphEdgeFromHandle(ParentBoxModelX              , PlaceChildX, LayoutGraph);
                 UIAddGraphEdgeFromHandle(ChildrenBoxModelX[ChildIndex], PlaceChildX, LayoutGraph);
@@ -1377,7 +1685,7 @@ UILeaveVerticalLayout(const ui_vertical_layout *Layout, ui_window *Window)
     // Y-Axis Placing (Major Axis)
     //
 
-    ui_graph_node_handle PlaceAxisY = UIAddGraphNode(LayoutGraph);
+    ui_graph_node_handle PlaceAxisY = UIAddLayoutGraphNode(LayoutGraph);
     {
         UIAddGraphEdgeFromHandle(ParentBoxModelY, PlaceAxisY, LayoutGraph);
 
@@ -1385,6 +1693,73 @@ UILeaveVerticalLayout(const ui_vertical_layout *Layout, ui_window *Window)
         for(ui_vertical_content_node *Node = Layout->FstContent; Node != 0; Node = Node->Next)
         {
             UIAddGraphEdgeFromHandle(ChildrenBoxModelY[ChildIndex], PlaceAxisY, LayoutGraph);
+        }
+    }
+}
+
+
+static void
+UILeaveVerticalLayout2(const ui_vertical_layout *Layout, ui_window *Window)
+{
+    ui_layout_graph     *LayoutGraph = Window->LayoutGraph;
+    ui_linear_allocator *Allocator   = &Window->FrameAllocator;
+
+    ui_layout_resource_handle LayoutSizeX     = UIAcquireFloatLayoutResource(1, LayoutGraph);
+    ui_layout_resource_handle LayoutSizeY     = UIAcquireFloatLayoutResource(1, LayoutGraph);
+    ui_layout_resource_handle ParentAxisBoxX  = UIAcquireFloatLayoutResource(1, LayoutGraph);
+    ui_layout_resource_handle LayoutBoxModelY = UIAcquireFloatLayoutResource(1, LayoutGraph);
+
+    ui_layout_resource_handle ContentSizeX     = UIAcquireFloatLayoutResource(Layout->ContentCount, LayoutGraph);
+    ui_layout_resource_handle ContentSizeY     = UIAcquireFloatLayoutResource(Layout->ContentCount, LayoutGraph);
+    ui_layout_resource_handle ContentBoxModelY = UIAcquireFloatLayoutResource(Layout->ContentCount, LayoutGraph);
+    ui_layout_resource_handle ContentPositionX = UIAcquireFloatLayoutResource(Layout->ContentCount, LayoutGraph);
+    ui_layout_resource_handle ContentPositionY = UIAcquireFloatLayoutResource(Layout->ContentCount, LayoutGraph);
+
+
+    ui_layout_resource_handle *ChildrenAxisBoxX = UIAllocateLinearArray(Layout->ContentCount, ui_layout_resource_handle, Allocator);
+
+
+    //
+    // Place X (Minor Axis)
+    //
+
+    ui_graph_node_handle PlaceMinorAxisHandle = UIAddLayoutGraphNode(LayoutGraph);
+    {
+        uint32_t ChildIndex = 0;
+        for(ui_vertical_content_node *Node = Layout->FstContent; Node != 0; Node = Node->Next, ChildIndex += 1)
+        {
+            ui_layout_resource_handle    Position = UIAcquireFloatLayoutResource(1, LayoutGraph);
+            ui_place_minor_axis_command *Command  = UIAcquirePlaceMinorAxisCommand(PlaceMinorAxisHandle, LayoutGraph);
+            if(Command)
+            {
+                Command->Padding       = Layout->Padding.Left;
+                Command->BorderWidth   = Layout->BorderWidth;
+                Command->BorderInset   = Layout->BorderInset;
+                Command->Alignment     = Layout->Align;
+                Command->ParentAxisBox = UIBindLayoutRead(ParentAxisBoxX, PlaceMinorAxisHandle, LayoutGraph);
+                Command->ChildAxisBox  = UIBindLayoutRead(ChildrenAxisBoxX[ChildIndex], PlaceMinorAxisHandle, LayoutGraph);
+                Command->ChildPosition = UIBindLayoutWrite(Position, PlaceMinorAxisHandle, LayoutGraph);
+            }
+        }
+    }
+
+    //
+    // Place Y (Major Axis)
+    //
+
+    ui_graph_node_handle PlaceMajorAxisHandle = UIAddLayoutGraphNode(LayoutGraph);
+    {
+        ui_place_major_axis_command *Command = UIAcquirePlaceMajorAxisCommand(PlaceMajorAxisHandle, LayoutGraph);
+        if(Command)
+        {
+            Command->Spacing         = Layout->Spacing;
+            Command->Padding         = Layout->Padding.Left;
+            Command->BorderWidth     = Layout->BorderWidth;
+            Command->BorderInset     = Layout->BorderInset;
+            Command->Justify         = Layout->Justify;
+            Command->LayoutSize      = UIBindLayoutRead(LayoutSizeY , PlaceMajorAxisHandle, LayoutGraph);
+            Command->ContentSize     = UIBindLayoutRead(ContentSizeX, PlaceMajorAxisHandle, LayoutGraph);
+            Command->ContentPosition = UIBindLayoutWrite(ContentPositionY, PlaceMajorAxisHandle, LayoutGraph);
         }
     }
 }
